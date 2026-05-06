@@ -1,0 +1,66 @@
+name: Build firmware
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:   # lets you smoke-test the build without cutting a tag
+
+permissions:
+  contents: write      # required for softprops/action-gh-release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Cache board package + libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-${{ runner.os }}-${{ hashFiles('.github/workflows/release.yml') }}
+
+      - name: Configure arduino-cli + install M5Stack core
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
+          arduino-cli core update-index
+          arduino-cli core install m5stack:esp32
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib install \
+            "M5CoreS3" "M5Unified" "ArduinoJson" \
+            "WiFiManager" "DallasTemperature" "OneWire"
+
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            --fqbn m5stack:esp32:m5stack_cores3 \
+            --warnings default \
+            --export-binaries \
+            .
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          BIN_DIR="build/m5stack.esp32.m5stack_cores3"
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          cp "$BIN_DIR/cores3-hydro.ino.bin" "dist/cores3-hydro-${TAG}.bin"
+          cp "$BIN_DIR/cores3-hydro.ino.elf" "dist/cores3-hydro-${TAG}.elf"
+          ls -lh dist
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/cores3-hydro-*.bin
+            dist/cores3-hydro-*.elf
+          generate_release_notes: true
