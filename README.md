@@ -24,7 +24,10 @@ readings and tells me whether the plants are happy).
   so multiple units on the same LAN are uniquely discoverable; rename
   from the web UI
 - Glanceable display with sim-mode tinting, time/date, Wi-Fi/battery state
-- OTA updates over the network
+- **Web-based firmware updates** — drag a new `.bin` onto `/ota` in your
+  browser; the upload is buffered in PSRAM before flashing so a dropped
+  connection leaves the running firmware untouched. Push-style ArduinoOTA
+  via `arduino-cli` is also supported (`build.ps1 -Network`).
 - NTP-synced timekeeping with timezone support
 
 ## Hardware
@@ -40,7 +43,7 @@ readings and tells me whether the plants are happy).
 PowerShell on Windows:
 
 ```powershell
-git clone https://github.com/sharpdaddy59/Plant-Monitor.git cores3-hydro
+git clone https://github.com/sharpdaddy59/cores3-hydro.git
 cd cores3-hydro
 
 # One-time setup: installs arduino-cli, the M5Stack board package,
@@ -86,6 +89,8 @@ The home page provides:
 | `/snapshot` | GET | Current camera frame (image/jpeg) |
 | `/sim` | GET, POST | Get / set per-sensor simulation overrides |
 | `/hostname` | GET, POST | Get / set the mDNS hostname |
+| `/ota` | GET | Firmware-upload page |
+| `/ota/upload` | POST | Receive a `.bin`, buffer in PSRAM, flash on success |
 | `/wifi/reset` | POST | Wipe stored Wi-Fi credentials and reboot |
 
 Sample `/sensors` response:
@@ -105,6 +110,33 @@ Sample `/sensors` response:
 
 The full reference, including JSON shapes and the rationale for each
 design decision, lives in [`docs/cores3-firmware-spec.md`](docs/cores3-firmware-spec.md).
+
+## Updating firmware
+
+Two paths, both go over Wi-Fi — no USB cable needed once the device is
+on your LAN.
+
+**Browser upload (easiest):**
+
+1. Build a new image — `.\build.ps1` drops
+   `build/m5stack.esp32.m5stack_cores3/cores3-hydro.ino.bin` next to the
+   sketch.
+2. Open `http://cores3-hydro-<last4mac>.local/ota` in a browser.
+3. Pick the `.bin`, hit **Upload**. The device pauses sensor tasks,
+   shows a takeover screen, buffers the full image into PSRAM, then
+   flashes and reboots. If anything goes wrong before the flash step
+   (network drop, browser closed, malformed `.bin`), the running
+   partition is untouched.
+
+**Push from the dev machine:**
+
+```powershell
+.\build.ps1 -Network                        # default hostname
+.\build.ps1 -Network -NetHost greenhouse-1  # named device
+```
+
+This uses ArduinoOTA over mDNS — same on-device flash path, just driven
+by `arduino-cli` instead of the browser.
 
 ## Why arduino-cli, not PlatformIO?
 
@@ -130,6 +162,7 @@ cores3-hydro/
 ├── net.{cpp,h}            Wi-Fi reconnect, mDNS, OTA, NTP
 ├── display.{cpp,h}        Off-screen-canvas dashboard
 ├── http_server.{cpp,h}    Routes + home page UI
+├── ota.{cpp,h}            HTTP firmware upload (PSRAM-buffered)
 ├── sim_state.{cpp,h}      Per-sensor sim flag persistence
 ├── device_name.{cpp,h}    mDNS hostname management
 ├── quirc.{c,h}, decode.c, identify.c, version_db.c, quirc_internal.h
@@ -142,7 +175,7 @@ cores3-hydro/
 
 ## Status
 
-v0.2.0 — running on a single CoreS3 + DIN base in production. Next on
+v0.3.0 — running on a single CoreS3 + DIN base in production. Next on
 the list: a side-by-side test with the CoreS3 Lite to confirm the
 firmware ports unchanged.
 

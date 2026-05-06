@@ -124,13 +124,23 @@ sensor on Port A.
 
 ## Recent state
 
-- **v0.2.0 (current):** per-device mDNS hostname with NVS-persisted user
-  override, `GET`/`POST /hostname` endpoints, home-page UI for renaming.
-  Display header and browser tab title both reflect the live hostname.
-  Default hostname includes a per-MAC suffix so multiple units are
-  uniquely discoverable. Project pushed to
-  `https://github.com/sharpdaddy59/Plant-Monitor` (fresh history — the
-  pre-v0.2.0 PIO→arduino-cli migration noise was squashed out).
+- **v0.3.0 (current):** HTTP-based OTA firmware update. `GET /ota` serves
+  an upload page; `POST /ota/upload` buffers the full `.bin` in PSRAM via
+  `ps_malloc` before any byte hits flash, so a torn upload leaves the
+  running partition untouched. Camera framebuffers are released at upload
+  start to free PSRAM; sensor tasks idle on a new `g_state.ota_in_progress`
+  flag; display switches to a takeover screen. The existing ArduinoOTA
+  push path is preserved. `build.ps1` gains `-Network` (push via
+  ArduinoOTA / mDNS) and emits `--export-binaries` so the `.bin` path is
+  predictable. Implementation lives in `ota.cpp` / `ota.h`.
+- **v0.2.0:** per-device mDNS hostname with NVS-persisted user override,
+  `GET`/`POST /hostname` endpoints, home-page UI for renaming. Display
+  header and browser tab title both reflect the live hostname. Default
+  hostname includes a per-MAC suffix so multiple units are uniquely
+  discoverable. Repo lives at
+  `https://github.com/sharpdaddy59/cores3-hydro` (renamed from
+  `Plant-Monitor`; fresh history — the pre-v0.2.0 PIO→arduino-cli
+  migration noise was squashed out).
 - **v0.1.0 history** (squashed): initial scaffolding, PIO→arduino-cli
   migration, QR-based WiFi setup, per-sensor runtime simulation
   overrides, interactive home-page UI.
