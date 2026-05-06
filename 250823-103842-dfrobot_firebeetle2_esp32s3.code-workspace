@@ -1,0 +1,20 @@
+{
+	"folders": [
+		{
+			"path": "../../PlatformIO/Projects/250823-103842-dfrobot_firebeetle2_esp32s3"
+		},
+		{
+			"name": "ButtonTest",
+			"path": "../../PlatformIO/Projects/ButtonTest"
+		},
+		{
+			"name": "esp32-s3-PCRemote",
+			"path": "../../PlatformIO/Projects/esp32-s3-PCRemote"
+		},
+		{
+			"name": "ESP32-S3-zero_simpleBLE",
+			"path": "../../PlatformIO/Projects/ESP32-S3-zero_simpleBLE"
+		}
+	],
+	"settings": {}
+}

@@ -1,0 +1,32 @@
+# PlatformIO leftovers (project migrated to arduino-cli, but cache may
+# linger if anyone re-opens the folder in PIO).
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code workspace files (PIO-generated; arduino-cli doesn't need them)
+.vscode/
+
+# Build artifacts (arduino-cli builds in a temp dir by default but allow
+# explicit --output-dir users to keep them out of git)
+build/
+*.elf
+*.bin
+*.map
+*.hex
+
+# Editor swap / backup files
+*.swp
+*.swo
+*~
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# One-off camera test captures
+snap.jpg
+
+# Local-only WiFi credentials, if anyone ever re-creates them
+secrets.h
