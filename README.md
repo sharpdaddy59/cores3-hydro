@@ -148,4 +148,5 @@ firmware ports unchanged.
 
 ## License
 
-MIT (or pick whichever you prefer — this is a hobby project).
+MIT — see [`LICENSE`](LICENSE). Bundled quirc QR decoder is ISC-licensed
+(© Daniel Beer); the notice is preserved in those source files.
