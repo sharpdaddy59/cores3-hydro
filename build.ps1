@@ -12,9 +12,17 @@
 #   .\build.ps1 -Upload                         # compile + auto-detect + upload
 #   .\build.ps1 -Upload -Port COM8              # compile + upload to specific port
 #   .\build.ps1 -Upload -Monitor                # upload then attach serial monitor
+#   .\build.ps1 -Network                        # compile + push OTA via ArduinoOTA (mDNS)
+#   .\build.ps1 -Network -NetHost greenhouse-1  # OTA push to a non-default hostname
 #
 # To put a sensor in simulation mode at runtime (no rebuild needed):
 #   Invoke-WebRequest -Method POST "http://cores3-hydro.local/sim?air=on"
+#
+# OTA notes:
+#   -Network uses arduino-cli's --protocol network path and the on-device
+#   ArduinoOTA listener (port 3232 via mDNS). It's the dev workflow — push
+#   straight from build host. The browser-based POST /ota/upload path
+#   (added in v0.3.0) is the user-facing alternative for phones/laptops.
 #
 # Pre-reqs (run setup.ps1 once):
 #   - arduino-cli on PATH
@@ -28,11 +36,33 @@ param(
     [string]$Port = "",
     [switch]$Upload,
     [switch]$Monitor,
-    [switch]$Strict
+    [switch]$Strict,
+    [switch]$Network,
+    [string]$NetHost = "cores3-hydro"
 )
 
 $Fqbn      = "m5stack:esp32:m5stack_cores3"
-$SketchDir = $PSScriptRoot
+
+# arduino-cli requires the sketch directory's leaf name to match the .ino's
+# basename (e.g. dir=cores3-hydro, file=cores3-hydro.ino). $PSScriptRoot
+# resolves through directory junctions to the real path, which breaks if
+# the user is working from a worktree or a renamed clone but invoking the
+# script via a junction whose leaf name DOES match. So we prefer $PWD when
+# that path satisfies the dir/.ino name rule, falling back to $PSScriptRoot.
+function Find-SketchDir {
+    foreach ($c in @($PWD.Path, $PSScriptRoot) | Select-Object -Unique) {
+        $leaf = Split-Path -Leaf $c
+        if (Test-Path (Join-Path $c "$leaf.ino")) { return $c }
+    }
+    return $null
+}
+$SketchDir = Find-SketchDir
+if (-not $SketchDir) {
+    Write-Host "[build] No matching .ino found in this directory or the script's location."
+    Write-Host "[build] arduino-cli requires <dir-leaf-name>/<dir-leaf-name>.ino — rename"
+    Write-Host "[build] the folder, work from a junction, or merge the branch into main."
+    exit 1
+}
 
 # Per-env compile-time defines. Sensor simulation is now a runtime concern
 # (per-sensor flags toggled via POST /sim, persisted in NVS) — there's no
@@ -54,6 +84,10 @@ $compileArgs = @(
     "compile"
     "--fqbn"; $Fqbn
     "--warnings"; $warn
+    # --export-binaries drops the .bin / .elf / .map next to the sketch in
+    # build/<fqbn-formatted>/ so we always have a predictable artifact for
+    # POST /ota/upload (or any other consumer). build/ is in .gitignore.
+    "--export-binaries"
 )
 if ($ExtraFlags) {
     # Use compiler.cpp.extra_flags (empty by default, appends to the
@@ -67,6 +101,30 @@ $compileArgs += $SketchDir
 
 & arduino-cli @compileArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# Report where the OTA-friendly .bin landed. arduino-cli replaces the
+# colons in the FQBN with dots when building the output path.
+$binDir = Join-Path $SketchDir "build\$($Fqbn -replace ':', '.')"
+$binPath = Join-Path $binDir "$(Split-Path -Leaf $SketchDir).ino.bin"
+if (Test-Path $binPath) {
+    Write-Host "[build] Firmware .bin: $binPath"
+}
+
+# ---------------------------------------------------------------------------
+# Network upload (ArduinoOTA via mDNS) — runs instead of the serial path
+# ---------------------------------------------------------------------------
+if ($Network) {
+    # arduino-cli's network protocol talks to the on-device ArduinoOTA
+    # listener that net.cpp brings up after WiFi connects. The "port" here
+    # is actually a host — usually <hostname>.local — and arduino-cli
+    # resolves the OTA service via mDNS.
+    $netTarget = "$NetHost.local"
+    Write-Host "[build] Pushing OTA to $netTarget (ArduinoOTA / port 3232)"
+    arduino-cli upload --protocol network --port $netTarget --fqbn $Fqbn $SketchDir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Write-Host "[build] OTA push complete. Device should reboot into the new image."
+    return
+}
 
 if (-not $Upload) {
     Write-Host "[build] Compile OK."

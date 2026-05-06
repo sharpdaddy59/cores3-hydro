@@ -20,6 +20,7 @@
 #include "sim_state.h"     // for sim_state_save_* in /sim
 #include "device_name.h"   // hostname getters/setter for /hostname
 #include "net.h"           // net_apply_hostname_change() after rename
+#include "ota.h"           // ota_register() — /ota and /ota/upload handlers
 
 static WebServer s_server(HTTP_PORT);
 
@@ -256,6 +257,10 @@ static void handle_root() {
     "  <div id=\"host-feedback\" class=\"feedback\"></div>\n"
     "\n"
     "  <h2>Admin</h2>\n"
+    "  <p>\n"
+    "    <a href=\"/ota\">Firmware update</a>\n"
+    "    <span class=\"muted\">&nbsp; &mdash; upload a new <code>.bin</code> from your browser.</span>\n"
+    "  </p>\n"
     "  <p>\n"
     "    <button class=\"danger\" onclick=\"resetWifi()\">Reset Wi-Fi credentials</button>\n"
     "    <span class=\"muted\">&nbsp; &mdash; wipes saved Wi-Fi and reboots into QR setup.</span>\n"
@@ -563,6 +568,12 @@ void http_server_begin() {
   s_server.on("/sim",        handle_sim);
   s_server.on("/hostname",   handle_hostname);
   s_server.on("/wifi/reset", handle_wifi_reset);
+
+  // OTA endpoints (/ota, /ota/upload). Owned by ota.cpp — it also opts in
+  // to the Content-Length request header via collectHeaders(), which is
+  // why this must happen on our s_server instance and not a separate one.
+  ota_register(s_server);
+
   s_server.onNotFound(handle_not_found);
   s_server.begin();
 }

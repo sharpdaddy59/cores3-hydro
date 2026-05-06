@@ -84,6 +84,15 @@ static void dht20_task(void *param) {
   uint32_t cycles_since_reprobe = 0;
 
   for (;;) {
+    // Hold off all hardware reads while an OTA upload is in flight. The
+    // ps_malloc'd firmware buffer needs every spare byte of PSRAM, and the
+    // I2C mutex contention here would just delay the upload's reboot.
+    // We still vTaskDelay below so the task continues feeding the WDT.
+    if (g_state.ota_in_progress.load()) {
+      vTaskDelay(pdMS_TO_TICKS(DHT_INTERVAL_MS));
+      continue;
+    }
+
     float t = NAN;
     float h = NAN;
 

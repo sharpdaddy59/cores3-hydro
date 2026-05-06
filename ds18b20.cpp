@@ -31,6 +31,12 @@ static void ds18b20_task(void *param) {
   s_ds.setWaitForConversion(false);   // we manage the wait via vTaskDelay
 
   for (;;) {
+    // Idle during OTA — see dht20.cpp for rationale.
+    if (g_state.ota_in_progress.load()) {
+      vTaskDelay(pdMS_TO_TICKS(DS18B20_INTERVAL_MS));
+      continue;
+    }
+
     float t = NAN;
 
     if (g_state.simulate_water.load()) {

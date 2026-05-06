@@ -200,5 +200,46 @@ void camera_release_frame() {
   }
 }
 
+void camera_stop() {
+  if (!s_init_ok) {
+    Serial.println("[camera] stop: not running, nothing to do");
+    return;
+  }
+
+  // Take the lock so no /snapshot handler is mid-conversion when we yank
+  // the driver out from under it. If a snapshot is in-flight we just wait;
+  // the synchronous WebServer means at most one outstanding capture.
+  if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    Serial.println("[camera] stop: timeout waiting for lock; deinit-ing anyway");
+  }
+
+  // Free anything dangling from a recent get_frame the handler didn't
+  // get to release (defensive; under normal flow these are already null).
+  if (s_jpeg_buf) {
+    free(s_jpeg_buf);
+    s_jpeg_buf = nullptr;
+    s_jpeg_len = 0;
+  }
+  if (s_current_fb) {
+    esp_camera_fb_return(s_current_fb);
+    s_current_fb = nullptr;
+  }
+
+  Serial.printf("[camera] stop: free PSRAM before deinit: %u bytes\n",
+                (unsigned)ESP.getFreePsram());
+  esp_err_t err = esp_camera_deinit();
+  if (err != ESP_OK) {
+    Serial.printf("[camera] esp_camera_deinit returned 0x%04x\n", (unsigned)err);
+  }
+  Serial.printf("[camera] stop: free PSRAM after deinit:  %u bytes\n",
+                (unsigned)ESP.getFreePsram());
+
+  s_init_ok = false;
+
+  if (s_lock) {
+    xSemaphoreGive(s_lock);
+  }
+}
+
 bool camera_is_initialized() { return s_init_ok; }
 int  camera_last_error()     { return s_last_err; }

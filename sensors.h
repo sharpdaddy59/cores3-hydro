@@ -41,6 +41,15 @@ struct SensorState {
   std::atomic<bool>     simulate_air{false};     // DHT20 (air_temp + humidity)
   std::atomic<bool>     simulate_water{false};   // DS18B20 (water_temp)
   std::atomic<bool>     simulate_light{false};   // LTR-553ALS (light_lux)
+
+  // Set true while a POST /ota/upload is in flight: the buffer-then-burn
+  // path needs every spare byte of PSRAM and zero contention on the I2C
+  // mutex. Sensor tasks check this at the top of their loop and idle out
+  // (no hardware reads, no atomic writes); display.cpp paints an
+  // "OTA in progress" screen instead of the dashboard. Cleared on success
+  // (irrelevant — we ESP.restart()) or on any failure path so the device
+  // recovers without a reboot if the upload aborts mid-way.
+  std::atomic<bool>     ota_in_progress{false};
 };
 
 extern SensorState g_state;

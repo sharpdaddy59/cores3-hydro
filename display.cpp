@@ -26,6 +26,36 @@
 static M5Canvas s_canvas(&M5.Display);
 
 // ---------------------------------------------------------------------------
+// OTA-in-progress takeover screen. Painted instead of the dashboard while
+// g_state.ota_in_progress is set. Intentionally minimal — no live stats,
+// no animation — because the upload path is grabbing PSRAM and we don't
+// want the display task pulling in any extra work.
+// ---------------------------------------------------------------------------
+static void draw_ota_frame() {
+  s_canvas.fillScreen(TFT_NAVY);
+  s_canvas.setTextColor(TFT_WHITE, TFT_NAVY);
+
+  s_canvas.setTextSize(3);
+  s_canvas.setCursor(40, 60);
+  s_canvas.print("OTA UPDATE");
+
+  s_canvas.setTextSize(2);
+  s_canvas.setCursor(20, 110);
+  s_canvas.print("uploading firmware");
+  s_canvas.setCursor(20, 135);
+  s_canvas.print("to PSRAM buffer...");
+
+  s_canvas.setTextSize(1);
+  s_canvas.setCursor(20, 180);
+  s_canvas.setTextColor(TFT_YELLOW, TFT_NAVY);
+  s_canvas.print("Sensors paused. Device will");
+  s_canvas.setCursor(20, 195);
+  s_canvas.print("reboot when flash is written.");
+
+  s_canvas.pushSprite(0, 0);
+}
+
+// ---------------------------------------------------------------------------
 // One full frame, drawn into the off-screen canvas.
 // ---------------------------------------------------------------------------
 static void draw_frame() {
@@ -147,7 +177,11 @@ static void display_task(void *param) {
   }
 
   for (;;) {
-    draw_frame();
+    if (g_state.ota_in_progress.load()) {
+      draw_ota_frame();
+    } else {
+      draw_frame();
+    }
     vTaskDelay(pdMS_TO_TICKS(DISPLAY_INTERVAL_MS));
   }
 }

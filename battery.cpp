@@ -17,6 +17,12 @@
 static void battery_task(void *param) {
   (void)param;
   for (;;) {
+    // Idle during OTA — see dht20.cpp for rationale.
+    if (g_state.ota_in_progress.load()) {
+      vTaskDelay(pdMS_TO_TICKS(BATTERY_POLL_MS));
+      continue;
+    }
+
     int level = M5.Power.getBatteryLevel();   // 0..100, or -1 if unsupported
     if (level < 0)   level = 0;
     if (level > 100) level = 100;

@@ -1,5 +1,20 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v5)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v6)
 
+> **v6 changes:** Adds an HTTP-based OTA path alongside the existing
+> ArduinoOTA push: `GET /ota` serves a tiny browser page with a file
+> picker; `POST /ota/upload` accepts a multipart-form-data upload of a
+> raw `.bin`, buffers the entire image in PSRAM via `ps_malloc()`, then
+> writes it to flash via `Update.h` once fully received. Buffer-then-burn
+> is safer than streaming straight to flash — a torn upload leaves the
+> running partition untouched. The new `g_state.ota_in_progress` atomic
+> flag idles all sensor tasks and switches the display to a takeover
+> screen during the upload; `camera_stop()` is called at the start of the
+> upload to free the camera framebuffers (~1.2 MB) so the upload buffer
+> fits. ArduinoOTA stays in place for the build-host dev loop and gains a
+> `build.ps1 -Network` switch that pushes via the network protocol. New
+> module: `ota.{cpp,h}`. `FW_VERSION` bumps to `0.3.0`. No auth, no
+> signature verification — same LAN-trust model as the rest of the device.
+>
 > **v5 changes:** `MDNS_HOSTNAME` is now a *base default*, not the runtime
 > name. On first boot the device computes
 > `cores3-hydro-<last4mac>` (e.g. `cores3-hydro-a1b2`) so that two units on
@@ -263,7 +278,8 @@ Per-request init/deinit is unreliable on ESP32 (PSRAM leaks, DMA lockups).
   QR-code setup mode (see *QR-Code WiFi Setup Mode* section below) which
   takes over the camera and display until the user shows a `WIFI:`-format QR.
 - Listens on port 80.
-- Routes: `/`, `/sensors`, `/status`, `/snapshot`, `POST /wifi/reset`.
+- Routes: `/`, `/sensors`, `/status`, `/snapshot`, `/sim`, `/hostname`,
+  `POST /wifi/reset`, `/ota`, `POST /ota/upload`.
 - Never blocks on sensors — reads global state and returns immediately.
 
 ### 6. Display Update (Optional Main Thread Task)
@@ -501,7 +517,8 @@ users who want to inspect the device or toggle sim flags from a browser:
   Save POSTs to `/hostname?name=<value>`; Reset POSTs `/hostname?name=`.
   The page lazy-loads state via `GET /hostname` and notes that other
   devices' DNS caches may take ~2 minutes to forget the old name.
-- **Admin** section — a red "Reset Wi-Fi credentials" button that posts to
+- **Admin** section — a "Firmware update" link that opens `GET /ota`,
+  plus a red "Reset Wi-Fi credentials" button that posts to
   `/wifi/reset` after a `confirm()` dialog.
 
 The page is served as a single self-contained HTML response (no external
@@ -576,6 +593,80 @@ Returns 200 with the resulting state as JSON (same shape as `GET /sim`),
 or 400 with a plain-text error if a value couldn't be parsed. Each
 successful flag change is persisted to NVS (`sim` namespace) before the
 response is sent — surviving reboots and reflashes.
+
+### `GET /ota`
+Returns a small self-contained HTML page with a file picker, a submit
+button, an upload-progress bar, and an inline JavaScript that POSTs the
+selected `.bin` to `/ota/upload` via `XMLHttpRequest` (so we can drive
+the `<progress>` element from `xhr.upload.onprogress`). The page also
+shows the current `FW_VERSION` for sanity-checking before flashing.
+
+This page exists for browser-driven updates from a phone or laptop;
+agents should use the underlying `POST /ota/upload` endpoint directly.
+
+### `POST /ota/upload`
+Accepts a multipart-form-data upload of a raw firmware image (the same
+`.bin` produced by `arduino-cli compile`). The form field name is
+`firmware`; only one file per request is honored.
+
+**Architecture: buffer-then-burn.** The full image is staged in PSRAM via
+`ps_malloc()` and only written to flash once the upload has completed
+successfully. This is safer than streaming straight to flash — if the
+upload is torn (network failure, client cancel, declared size mismatch),
+the running partition is untouched and the device continues normally
+after the failure response.
+
+**Upload state machine** (`ota.cpp`):
+
+1. `UPLOAD_FILE_START` — read `Content-Length`, sanity-cap at 6 MB, set
+   `g_state.ota_in_progress = true`, call `camera_stop()` to release the
+   camera framebuffers (~1.2 MB of PSRAM), `ps_malloc(content_length)`,
+   prep the `Update` library.
+2. `UPLOAD_FILE_WRITE` — `memcpy` each chunk into the PSRAM buffer at
+   the running offset; reject if the cumulative size exceeds the
+   declared `Content-Length`.
+3. `UPLOAD_FILE_END` — `Update.begin(received) → Update.write(buf,
+   received) → Update.end(true)`. The library handles partition swap
+   and CRC validation. Free the buffer.
+4. Completion handler — `send(200, text/html, "Update OK — rebooting")`
+   then `delay(2000); ESP.restart()`.
+
+`Content-Length` is opted in via `server.collectHeaders()` so the chunk
+handler can read it at `UPLOAD_FILE_START`. The allocation includes the
+multipart envelope overhead (a few hundred bytes); we track the actual
+firmware byte count separately and only `Update.write()` that count.
+
+**Error responses:** any failure (missing/bogus Content-Length, oversize,
+`ps_malloc` returns null, size mismatch, `Update.*` failure, client
+abort) records an error string. The completion handler returns
+`500 application/json` with body `{"ok": false, "error": "<message>"}`,
+clears `ota_in_progress`, and leaves the running partition untouched.
+
+**Side effects during upload:**
+
+- All sensor tasks (DHT20, DS18B20, LTR-553, battery) check
+  `g_state.ota_in_progress` at the top of their loops and short-circuit
+  to a `vTaskDelay` — no hardware reads, no atomic writes.
+- The display switches from the dashboard to a navy "OTA UPDATE" screen
+  noting that sensors are paused and the device will reboot when flash
+  is written.
+- The camera is fully de-initialized via `camera_stop()` (calls
+  `esp_camera_deinit()`); `/snapshot` will return 503 from this point
+  until the next boot. Acceptable — the device is rebooting in seconds.
+
+**Notes / caveats:**
+
+- No CRC/SHA verification beyond what the `Update` library does
+  internally (CRC over the partition header). Signature verification is
+  a future enhancement.
+- No authentication. Same LAN-trust model as the rest of the API.
+- The 6 MB cap is below the typical ESP32 OTA partition size (~6.25 MB
+  for the default 16 MB-flash layout). Revisit if we customize
+  partitions.
+- If the running firmware was itself flashed via this path and an
+  earlier upload had already partial-staged a buffer, the
+  `ota_record_error` cleanup (which calls `Update.abort()`) makes the
+  next attempt safe.
 
 ### Auth note for admin endpoints
 No authentication on any endpoint — the device is LAN-trusted. If exposed
@@ -788,8 +879,21 @@ https://qifi.org all generate this format.
   comes from `device_hostname()` in `device_name.h`. mDNS must be
   re-initialized on each WiFi reconnect (see Network Service Re-init on
   Reconnect, above) and on each rename (see `net_apply_hostname_change()`).
-- **OTA:** Include basic ArduinoOTA for firmware updates without USB. Same
-  reconnect-restart story as mDNS.
+- **OTA: two parallel paths.**
+  - **ArduinoOTA (push from build host)** — port 3232 via mDNS, brought
+    up alongside mDNS in `net.cpp::start_services()`. Same
+    reconnect-restart story as mDNS — re-initialized on every WiFi
+    reconnect. Driven from `build.ps1 -Network` which passes
+    `--protocol network --port <hostname>.local` to `arduino-cli upload`.
+    This is the dev workflow.
+  - **HTTP browser upload** — `GET /ota` + `POST /ota/upload`, owned by
+    `ota.{cpp,h}`. Implements the buffer-then-burn pattern
+    (`ps_malloc → receive → validate → Update.write → ESP.restart()`)
+    so torn uploads can't brick the device. Releases the camera
+    framebuffers via `camera_stop()` at upload start to make PSRAM
+    room for the firmware buffer. Sensor tasks idle while
+    `g_state.ota_in_progress` is set; the display paints a takeover
+    screen. Browser-friendly so operators can update from a phone.
 - **Memory:** Global state is tiny (~100 bytes with atomics). No heap
   allocation in sensor threads. JSON responses use stack-allocated
   `JsonDocument`. Camera frames live in PSRAM via the camera driver.
@@ -827,7 +931,8 @@ cores3-hydro/
 ├── camera.{cpp,h}          // GC0308 init + /snapshot capture path
 ├── wifi_setup.{cpp,h}      // QR-code WiFi setup, NVS creds, parser
 ├── http_server.{cpp,h}     // Sync WebServer + handlers
-├── net.{cpp,h}             // WiFi connect, reconnect, mDNS, OTA, NTP
+├── ota.{cpp,h}             // GET /ota + POST /ota/upload (PSRAM-buffered)
+├── net.{cpp,h}             // WiFi connect, reconnect, mDNS, ArduinoOTA, NTP
 ├── simulation.{cpp,h}      // random generators (sim_air_temp, etc.)
 ├── sim_state.{cpp,h}       // NVS persistence for per-sensor sim overrides
 ├── display.{cpp,h}         // M5Canvas-backed status screen
@@ -850,10 +955,11 @@ in the same directory are compiled into the sketch.
 
 Build:
 ```powershell
-.\build.ps1                      # compile prod (default)
-.\build.ps1 -Env sim             # simulation env
-.\build.ps1 -Env no-display      # no display task
-.\build.ps1 -Upload -Monitor     # full cycle
+.\build.ps1                          # compile prod (default)
+.\build.ps1 -Env no-display          # no display task
+.\build.ps1 -Upload -Monitor         # full cycle (serial flash + monitor)
+.\build.ps1 -Network                 # OTA push to cores3-hydro.local (ArduinoOTA)
+.\build.ps1 -Network -NetHost <host> # OTA push to a different mDNS hostname
 ```
 
 Build flags per env are passed via `--build-property compiler.cpp.extra_flags`:

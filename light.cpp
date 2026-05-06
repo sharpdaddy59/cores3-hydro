@@ -109,6 +109,12 @@ static void light_task(void *param) {
   if (present) vTaskDelay(pdMS_TO_TICKS(150));
 
   for (;;) {
+    // Idle during OTA — see dht20.cpp for rationale.
+    if (g_state.ota_in_progress.load()) {
+      vTaskDelay(pdMS_TO_TICKS(LIGHT_INTERVAL_MS));
+      continue;
+    }
+
     uint16_t lux = 0;
     if (g_state.simulate_light.load()) {
       lux = sim_light();
