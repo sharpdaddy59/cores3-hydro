@@ -50,6 +50,17 @@ struct SensorState {
   // (irrelevant — we ESP.restart()) or on any failure path so the device
   // recovers without a reboot if the upload aborts mid-way.
   std::atomic<bool>     ota_in_progress{false};
+
+  // Display power management. Active brightness is what the user picked
+  // (0..255). dim_ms / sleep_ms are idle thresholds in milliseconds; 0
+  // disables that transition. last_touch_ms is monotonic millis() set by
+  // the main loop whenever M5.Touch reports a contact. The display task
+  // computes idle = millis() - last_touch_ms and picks ACTIVE / DIM /
+  // SLEEP each tick. Loaded from NVS at boot via display_settings_load().
+  std::atomic<uint8_t>  display_brightness{180};
+  std::atomic<uint32_t> display_dim_ms{30000};
+  std::atomic<uint32_t> display_sleep_ms{300000};
+  std::atomic<uint32_t> last_touch_ms{0};
 };
 
 extern SensorState g_state;

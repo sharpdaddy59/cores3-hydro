@@ -176,8 +176,47 @@ static void display_task(void *param) {
     return;
   }
 
+  // Track the last brightness we issued so we only call setBrightness on
+  // transitions. 0xFF (out-of-range sentinel) forces an explicit set on
+  // the first iteration regardless of the user's saved value.
+  uint8_t last_brightness = 0xFF;
+
   for (;;) {
-    if (g_state.ota_in_progress.load()) {
+    const bool     ota      = g_state.ota_in_progress.load();
+    const uint32_t now      = millis();
+    const uint32_t idle     = now - g_state.last_touch_ms.load();
+    const uint8_t  active   = g_state.display_brightness.load();
+    const uint32_t dim_ms   = g_state.display_dim_ms.load();
+    const uint32_t sleep_ms = g_state.display_sleep_ms.load();
+
+    // OTA always wins — the user must be able to read the takeover screen
+    // even if the display had already gone to sleep.
+    const bool sleep_now = !ota && sleep_ms > 0 && idle >= sleep_ms;
+    const bool dim_now   = !ota && !sleep_now && dim_ms > 0 && idle >= dim_ms;
+
+    uint8_t target;
+    if (ota || (!sleep_now && !dim_now)) {
+      target = active;
+    } else if (sleep_now) {
+      target = 0;
+    } else {
+      target = active / 4;   // DIM = ~25% of user-set active
+    }
+
+    if (target != last_brightness) {
+      M5.Display.setBrightness(target);
+      last_brightness = target;
+    }
+
+    if (sleep_now) {
+      // Backlight is off — skip the canvas blit entirely. Saves the
+      // ~150 KB PSRAM push every tick. Display contents will refresh
+      // immediately on wake because draw_frame() runs again then.
+      vTaskDelay(pdMS_TO_TICKS(DISPLAY_INTERVAL_MS));
+      continue;
+    }
+
+    if (ota) {
       draw_ota_frame();
     } else {
       draw_frame();

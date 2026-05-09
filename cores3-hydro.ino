@@ -27,6 +27,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #include "sensors.h"
 #include "sim_state.h"
 #include "device_name.h"
+#include "display_settings.h"
 #include "dht20.h"
 #include "ds18b20.h"
 #include "light.h"
@@ -121,6 +122,12 @@ void setup() {
   // the right name on first connect.
   device_name_init();
 
+  // Load display brightness + idle timeouts from NVS. Must run before
+  // display_start() so the task picks up the user-configured brightness
+  // on its first tick. Also seeds last_touch_ms so the dim/sleep timers
+  // begin counting from boot rather than firing immediately.
+  display_settings_load();
+
   check_credential_reset();
 
   // Camera init goes EARLY — before WiFi and other heavy memory consumers
@@ -151,6 +158,12 @@ void setup() {
 
 void loop() {
   M5.update();
+  // Touch wakes the display from dim/sleep. M5.update() already refreshed
+  // touch state above, so this read is free. Any contact at all counts as
+  // user activity — the gesture details aren't used post-boot anyway.
+  if (M5.Touch.getCount() > 0) {
+    g_state.last_touch_ms.store(millis());
+  }
   http_server_loop();   // synchronous WebServer needs handleClient() polling
   net_loop();           // OTA handle + WiFi state mirror
   delay(10);

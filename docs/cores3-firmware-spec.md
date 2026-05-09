@@ -1,5 +1,23 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v6)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v7)
 
+> **v7 changes:** Display gains user-configurable backlight brightness and
+> idle-driven dim/sleep. The screen is otherwise on 24/7 with a fully
+> static layout, which on an IPS LCD risks backlight degradation and
+> mild image persistence over months. The display task now runs a
+> three-state machine (ACTIVE → DIM → SLEEP) gated by time since last
+> touch: at `dim_ms` of idle the backlight drops to ~25% of the user
+> brightness; at `sleep_ms` the backlight goes fully off and the canvas
+> blit is skipped. Either timeout set to `0` disables that transition.
+> Touch wakes the display — `M5.Touch.getCount()` is polled in the main
+> `loop()` and updates `g_state.last_touch_ms`. OTA-in-progress overrides
+> sleep so the takeover screen is always visible. Settings live in
+> `g_state.display_brightness / display_dim_ms / display_sleep_ms`,
+> persisted via the new NVS namespace `display` (keys `bright`, `dim_ms`,
+> `sleep_ms`) and exposed over `GET`/`POST /display`. Defaults: brightness
+> 180/255, dim 30 s, sleep 5 min. New module: `display_settings.{cpp,h}`.
+> Home page gains a Display section (slider + two number inputs).
+> `FW_VERSION` bumps to `0.4.0`.
+>
 > **v6 changes:** Adds an HTTP-based OTA path alongside the existing
 > ArduinoOTA push: `GET /ota` serves a tiny browser page with a file
 > picker; `POST /ota/upload` accepts a multipart-form-data upload of a
@@ -278,7 +296,7 @@ Per-request init/deinit is unreliable on ESP32 (PSRAM leaks, DMA lockups).
   QR-code setup mode (see *QR-Code WiFi Setup Mode* section below) which
   takes over the camera and display until the user shows a `WIFI:`-format QR.
 - Listens on port 80.
-- Routes: `/`, `/sensors`, `/status`, `/snapshot`, `/sim`, `/hostname`,
+- Routes: `/`, `/sensors`, `/status`, `/snapshot`, `/sim`, `/hostname`, `/display`,
   `POST /wifi/reset`, `/ota`, `POST /ota/upload`.
 - Never blocks on sensors — reads global state and returns immediately.
 
@@ -593,6 +611,40 @@ Returns 200 with the resulting state as JSON (same shape as `GET /sim`),
 or 400 with a plain-text error if a value couldn't be parsed. Each
 successful flag change is persisted to NVS (`sim` namespace) before the
 response is sent — surviving reboots and reflashes.
+
+### `GET /display`
+Returns the current display power settings as JSON. Content-Type:
+`application/json`.
+
+```json
+{
+  "brightness": 180,
+  "dim_ms":     30000,
+  "sleep_ms":   300000
+}
+```
+
+- `brightness` — backlight intensity when ACTIVE, 0..255.
+- `dim_ms` — milliseconds of touch idle before the screen dims to ~25%
+  of `brightness`. `0` disables the dim transition.
+- `sleep_ms` — milliseconds of touch idle before the backlight goes
+  fully off and the canvas blit is skipped. `0` disables sleep.
+
+### `POST /display?<field>=<value>[&<field>=<value>...]`
+Updates one or more display settings. All three fields are optional;
+only listed fields are changed. Validation:
+
+- `brightness`: integer 0..255
+- `dim_ms`, `sleep_ms`: integer 0..86400000 (24 h)
+
+On success: each changed field is persisted to NVS (`display` namespace,
+keys `bright`, `dim_ms`, `sleep_ms`), the wake timestamp is reset (any
+POST is treated as user activity), and 200 is returned with the same JSON
+shape as `GET /display`. On invalid input, returns 400 with a short text
+body. Other methods return 405.
+
+OTA-in-progress overrides sleep — the takeover screen is always shown at
+`brightness` regardless of idle state.
 
 ### `GET /ota`
 Returns a small self-contained HTML page with a file picker, a submit
