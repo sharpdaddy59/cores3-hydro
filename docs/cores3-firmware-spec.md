@@ -1,5 +1,26 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v7)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v8)
 
+> **v8 changes:** Reverted first-time WiFi setup from QR-code scanning back
+> to **tzapu/WiFiManager** AP + captive portal. The QR path turned out to be
+> too fragile in practice — moiré aliasing against the GC0308's Bayer
+> pattern made phone-screen QRs nearly undecodable, and even
+> printed/laptop-screen QRs needed careful staging. The new flow: on first
+> boot (or after a credential reset) the device opens an open SoftAP named
+> `cores3-hydro-setup-<last4mac>`; the user connects from a phone/laptop
+> and is steered to a captive portal at http://192.168.4.1/ with a scanned
+> SSID list and a password field. Credentials are stored by WiFiManager via
+> the ESP32's native WiFi config — the project's old `wifi` Preferences
+> namespace is no longer used (and is wiped on credential reset for
+> migration cleanup). Portal timeout is 3 minutes; on timeout the device
+> reboots and re-enters setup. The camera is **kept** because
+> `GET /snapshot` still uses it, but it's no longer involved in setup.
+> Quirc and the scan loop are deleted entirely (no fallback). Both
+> credential-reset paths (top-right long-touch at boot, `POST /wifi/reset`)
+> stay; the home page's admin button is relabeled "Reconfigure WiFi". New
+> module structure: `wifi_setup.{cpp,h}` is now a thin WiFiManager wrapper;
+> `quirc.{c,h}`, `quirc_internal.h`, `decode.c`, `identify.c`,
+> `version_db.c` are removed. `FW_VERSION` bumps to `0.5.0`.
+>
 > **v7 changes:** Display gains user-configurable backlight brightness and
 > idle-driven dim/sleep. The screen is otherwise on 24/7 with a fully
 > static layout, which on an IPS LCD risks backlight degradation and
@@ -46,16 +67,17 @@
 > **v4 changes:** camera now functional and documented as such (the M5.In_I2C
 > 100 kHz coexistence pattern + sensor tuning resolved the bus-conflict and
 > exposure issues v3 described as blocking); replaced WiFiManager captive
-> portal with QR-code-based setup via the camera; rewrote build-system
-> guidance from PlatformIO to arduino-cli with M5Stack's arduino-esp32 fork
-> (PIO didn't reliably initialize OPI PSRAM on the CoreS3); added
-> `GET /` landing page and `POST /wifi/reset` endpoint; `/status` now exposes
-> camera, PSRAM, and battery diagnostics; corrected GPIO 2 / Port A note
-> (pin_xclk = -1 means no conflict); files section reflects flat
-> arduino-cli sketch layout with vendored quirc; **simulation is now a
-> per-sensor runtime override** (`GET`/`POST /sim`, NVS-persisted) instead
-> of a compile-time flag — `/sensors` exposes a `simulated` block so the
-> agent can tell real from fake; the `cores3-sim` build env is removed.
+> portal with QR-code-based setup via the camera (later reverted in v8);
+> rewrote build-system guidance from PlatformIO to arduino-cli with
+> M5Stack's arduino-esp32 fork (PIO didn't reliably initialize OPI PSRAM
+> on the CoreS3); added `GET /` landing page and `POST /wifi/reset`
+> endpoint; `/status` now exposes camera, PSRAM, and battery diagnostics;
+> corrected GPIO 2 / Port A note (pin_xclk = -1 means no conflict); files
+> section reflects flat arduino-cli sketch layout with vendored quirc
+> (also removed in v8); **simulation is now a per-sensor runtime override**
+> (`GET`/`POST /sim`, NVS-persisted) instead of a compile-time flag —
+> `/sensors` exposes a `simulated` block so the agent can tell real from
+> fake; the `cores3-sim` build env is removed.
 >
 > **v3 changes:** dropped seqlock fence pattern (unnecessary on 32-bit atomics),
 > rewrote camera timeout strategy (polling loop didn't actually time out),
@@ -211,8 +233,9 @@ glance.
 
 ### 4. Camera (Initialized Once at Boot, Capture On Demand)
 
-- **Triggered:** By HTTP request to `/snapshot` via synchronous `WebServer.h`,
-  and continuously during the QR-code WiFi setup mode (`wifi_setup.cpp`).
+- **Triggered:** By HTTP request to `/snapshot` via synchronous `WebServer.h`.
+  (Was also used continuously during v7's QR-code WiFi setup mode; that
+  path was removed in v8.)
 - **Reads:** RGB565 frames from GC0308 (0.3 MP, native VGA 640×480). For
   `/snapshot` we capture VGA RGB565 and convert to JPEG via
   `frame2jpg(quality=80)` at request time — the GC0308 has no hardware JPEG.
@@ -246,8 +269,9 @@ the camera).
    `frame_size = FRAMESIZE_VGA`, `fb_count = 2`, `fb_location = CAMERA_FB_IN_PSRAM`,
    `grab_mode = CAMERA_GRAB_LATEST`. PSRAM-backed frame buffers are
    essential — VGA RGB565 is 614 KB per buffer; will not fit in DRAM.
-3. After init, configure sensor tuning for the typical use case (looking at
-   a backlit screen / QR code in mixed lighting):
+3. After init, configure sensor tuning for the typical use case (a
+   plant-tank scene in mixed indoor lighting; settings were originally
+   chosen for QR scanning but remain reasonable defaults for `/snapshot`):
    - `set_contrast(1)`, `set_brightness(0)`, `set_saturation(0)`
    - `set_ae_level(-1)` — bias auto-exposure toward darker scene-average
      so phone-screen-bright highlights don't clip
@@ -280,10 +304,8 @@ writes the JPEG to the socket and calls `camera_release_frame()` (frees
 the JPEG buffer, returns the fb to the driver, releases the mutex). The
 mutex serializes simultaneous `/snapshot` requests against each other.
 
-The QR-setup mode in `wifi_setup.cpp` calls `esp_camera_fb_get()` directly
-(bypassing the mutex, since no other task uses the camera during setup),
-processes the VGA grayscale through quirc, and downsamples+mirrors the
-RGB565 frame to 320×240 for live display preview.
+As of v8, the camera is no longer used during WiFi setup — `/snapshot` is
+the sole consumer.
 
 Do NOT use `AsyncWebServer` for the camera endpoint — frame capture blocks.
 Per-request init/deinit is unreliable on ESP32 (PSRAM leaks, DMA lockups).
@@ -291,10 +313,12 @@ Per-request init/deinit is unreliable on ESP32 (PSRAM leaks, DMA lockups).
 ### 5. WiFi + HTTP Server (Main Thread)
 - **HTTP library:** `WebServer.h` (synchronous) — single-client device, no benefit
   from async for this use case.
-- WiFi credentials come from NVS (`Preferences` namespace `wifi`, keys `ssid`
-  and `pass`). On first boot or after a credential reset, the device enters
-  QR-code setup mode (see *QR-Code WiFi Setup Mode* section below) which
-  takes over the camera and display until the user shows a `WIFI:`-format QR.
+- WiFi credentials are owned by WiFiManager / the arduino-esp32 WiFi stack
+  (native ESP32 WiFi config storage). On first boot or after a credential
+  reset, the device enters WiFiManager's captive-portal AP mode (see
+  *WiFi Setup Mode (WiFiManager)* section below) which serves an SSID
+  scan + password form at http://192.168.4.1/ until the user finishes
+  or the 3-minute timeout fires.
 - Listens on port 80.
 - Routes: `/`, `/sensors`, `/status`, `/snapshot`, `/sim`, `/hostname`, `/display`,
   `POST /wifi/reset`, `/ota`, `POST /ota/upload`.
@@ -544,9 +568,12 @@ CSS/JS); all styling and behavior are inlined. Agents should hit the JSON
 endpoints directly rather than scraping this page.
 
 ### `POST /wifi/reset`
-Wipes the saved WiFi credentials from NVS (`wifi` namespace) and reboots
-the device, which then re-enters QR-code setup mode. Returns 200 with a
-plain-text body before triggering the reboot. Other methods return 405.
+Wipes the saved WiFi credentials (via `WiFiManager::resetSettings()` plus
+`WiFi.disconnect(true, true)`; the legacy `wifi` Preferences namespace is
+also cleared for migration cleanup) and reboots the device, which then
+re-enters WiFiManager's captive-portal AP mode. Returns 200 with a
+plain-text body that includes the AP name (`cores3-hydro-setup-<mac>`)
+and the portal URL before triggering the reboot. Other methods return 405.
 
 ### `GET /hostname`
 Returns the current mDNS hostname plus the per-MAC default and a derived
@@ -801,67 +828,65 @@ Wire these up in an `onWiFiReconnect()` callback hooked to the
 `SYSTEM_EVENT_STA_GOT_IP` event so they re-fire automatically on every
 reconnect, including the first.
 
-## QR-Code WiFi Setup Mode
+## WiFi Setup Mode (WiFiManager)
 
-Replaces the v3 WiFiManager + captive-portal approach. WiFiManager works,
-but its captive-portal HTML form has known issues with the password field
-on iOS / Android captive-portal mini-browsers, and steering users to "open
-a real browser at 192.168.4.1" was friction we wanted to remove.
-
-The CoreS3 has a working camera, so the cleaner pattern is to scan a
-WiFi-format QR code. Standard format (Wi-Fi Alliance / ZXing):
-
-```
-WIFI:T:WPA;S:NetworkName;P:Password;;
-```
-
-iOS' "Share Wi-Fi" feature, Android's "Share network", and websites like
-https://qifi.org all generate this format.
+Reverts v4's QR-code experiment back to tzapu/WiFiManager. The QR path
+was conceptually appealing — point camera at QR, done — but in practice
+moiré aliasing between phone-screen subpixel matrices and the GC0308's
+Bayer grid made decode reliability poor, and even printed/laptop-screen
+QRs needed careful staging. WiFiManager's captive-portal form is the
+boring, well-trodden path; we accept the iOS/Android captive-portal
+quirks that originally motivated the QR detour as a worthwhile tradeoff
+for setup that actually works.
 
 **Flow** (`wifi_setup.cpp::wifi_setup_run`):
 
-1. On boot, `net_begin()` reads NVS for stored creds (`Preferences`
-   namespace `wifi`, keys `ssid` + `pass`). If absent, it calls
-   `wifi_setup_run()` which takes over the display and camera.
-2. Brief splash screen with the one critical hint: **show a printed QR or
-   a laptop monitor — phone screens cause moiré aliasing against the
-   GC0308's Bayer pattern that destroys decode reliability**.
-3. Camera warmup: discard ~30 frames over ~1.5 seconds so auto-exposure
-   and gain converge before scanning starts.
-4. Scan loop, ~7-10 fps:
-   - Capture VGA RGB565 frame from the camera.
-   - Convert to grayscale into quirc's image buffer (PSRAM-backed; the
-     vendored quirc was patched to use `heap_caps_calloc` with
-     `MALLOC_CAP_SPIRAM` — 307 KB grayscale buffer can't fit in DRAM).
-   - Downsample+horizontal-mirror the same frame to 320×240 RGB565 in a
-     PSRAM scratch buffer for the live display preview. Mirror is for the
-     selfie-camera-style hand-eye coordination during aiming; the
-     **un-mirrored** grayscale goes to quirc.
-   - Run `quirc_end()` and check `quirc_count()`. On detect, run
-     `quirc_decode()`. On success, parse the `WIFI:` payload.
-5. On valid `WIFI:` parse: save to NVS via `wifi_creds_save()`, flash a
-   green confirmation screen, return to `net_begin()` which connects with
-   the new creds.
-6. Abort: long-press the bottom-right 60×60 zone for ≥2 s.
+1. On boot, `net_begin()` calls `wifi_setup_run()` unconditionally.
+2. Inside, a `WiFiManager` instance is configured with a 3-minute
+   `setConfigPortalTimeout(180)`, `setBreakAfterConfig(true)`, and AP +
+   save callbacks for logging.
+3. `wm.autoConnect("cores3-hydro-setup-<last4mac>")` is called:
+   - If WiFi credentials are already persisted (returning unit),
+     WiFiManager reconnects in STA mode without opening the portal and
+     returns `true` quickly.
+   - If not, it brings up an **open** SoftAP (no password) named
+     `cores3-hydro-setup-<last4mac>` on 192.168.4.1, with a DNS responder
+     that redirects all lookups to itself (the captive-portal trick), and
+     blocks serving an HTML form: SSID scan list + password field. On
+     submit it stores the creds, exits AP mode, and connects in STA. On
+     3-minute timeout it returns `false`.
+4. Display is taken over for the duration of the portal with a static
+   screen that shows the AP name, the URL (`http://192.168.4.1/`), and a
+   timeout hint.
+5. On `true` return, `net_begin()` proceeds (WiFi event handler has
+   already flipped to `Connected` and `start_services()` is queued).
+   On `false`, `net_begin()` reboots — next boot re-enters the portal.
+
+**Credential storage:** Owned by WiFiManager / the arduino-esp32 WiFi
+stack (native ESP32 WiFi config). The project's old `wifi` Preferences
+namespace from the QR-setup era is **not used**; `wifi_creds_clear()`
+wipes it once on reset for migration cleanup but never writes to it.
 
 **Re-entering setup on a configured device:**
 
 - **Touch gesture at boot:** the `check_credential_reset()` path in
   `cores3-hydro.ino` watches for a long-touch in the top-right 60×60 zone
   during the first 3 seconds of boot. On detect it calls
-  `net_reset_credentials()` which wipes NVS and reboots, falling through
-  into setup mode on the next boot.
-- **HTTP:** `POST /wifi/reset` from any LAN-connected client wipes NVS
-  and reboots, with the same effect. Useful for remote re-setup without
-  physical access.
+  `net_reset_credentials()`, which calls `wifi_creds_clear()` and
+  reboots into the portal on the next boot.
+- **HTTP:** `POST /wifi/reset` from any LAN-connected client has the
+  same effect. Useful for remote re-setup without physical access.
+- **Home-page button:** the admin section of `GET /` exposes a
+  "Reconfigure WiFi" button that POSTs to `/wifi/reset` after a
+  `confirm()` dialog.
 
 **Implementation files:**
 
-- `wifi_setup.{cpp,h}` — the scan loop, `WIFI:` parser, and
-  `wifi_creds_load/save/clear` NVS helpers.
-- `quirc.{c,h}`, `quirc_internal.h`, `decode.c`, `identify.c`,
-  `version_db.c` — vendored from `dlbeer/quirc` upstream; `quirc.c` has a
-  small ESP32-specific patch routing the image buffer to PSRAM.
+- `wifi_setup.{cpp,h}` — thin WiFiManager wrapper. Exposes
+  `wifi_setup_run()` and `wifi_creds_clear()`. No quirc, no NVS storage
+  of its own.
+- `tzapu/WiFiManager` library — installed via `setup.ps1`. No version
+  pin; tracks arduino-cli's resolution.
 
 ## Implementation Notes
 
@@ -880,11 +905,11 @@ https://qifi.org all generate this format.
   correctly out of the box once `m5stack:esp32:m5stack_cores3` is the
   selected board — no `platformio.ini` equivalents needed. Camera frame
   buffers go in PSRAM via the `esp_camera_init` config (`fb_location =
-  CAMERA_FB_IN_PSRAM`); large response buffers (e.g. quirc image at VGA
-  grayscale, 307 KB) should use `ps_malloc()` or vendored library patches
-  routing through `heap_caps_*(..., MALLOC_CAP_SPIRAM)`. Keep the ~320 KB
-  internal SRAM for tasks, stacks, and atomics — display canvas at 320×240
-  16 bpp is 153 KB and goes to PSRAM via `M5Canvas::setPsram(true)`.
+  CAMERA_FB_IN_PSRAM`); large response buffers (e.g. the buffered OTA
+  upload image, up to ~1.5 MB) should use `ps_malloc()` or route through
+  `heap_caps_*(..., MALLOC_CAP_SPIRAM)`. Keep the ~320 KB internal SRAM
+  for tasks, stacks, and atomics — display canvas at 320×240 16 bpp is
+  153 KB and goes to PSRAM via `M5Canvas::setPsram(true)`.
 - **Library list** (installed via arduino-cli; versions pin to whatever
   `arduino-cli lib install` resolves — no project-level pinning):
   - `m5stack/M5Unified` — display, touch, IMU, PMIC, speaker, mic
@@ -895,19 +920,20 @@ https://qifi.org all generate this format.
   - DHT20 read inline in `dht20.cpp` — no library needed; protocol is
     simple enough to keep in 30 lines and saves a dependency
   - LTR-553 read inline in `light.cpp` via `M5.In_I2C` — no library needed
-  - `quirc` vendored at the sketch root (5 .c files + 2 .h files), with a
-    small ESP32 patch routing the image buffer to PSRAM
+  - `tzapu/WiFiManager` — captive-portal AP for first-time WiFi setup
   - `espressif/esp32-camera` — bundled with the M5Stack arduino-esp32 core
-  - `Preferences` — bundled, used for NVS-backed WiFi creds
+  - `Preferences` — bundled, used for sim_state and device_name NVS state
+    (WiFi creds are owned by WiFiManager / arduino-esp32's native config)
 - **HTTP library:** `WebServer.h` (synchronous) — not AsyncWebServer. Single
   client, no benefit from async.
 - **JSON serialization:** ArduinoJson v7's stack-allocated `JsonDocument`
   sized for the response (~256 bytes for `/sensors` and `/status`). Avoid
   `String` concatenation entirely — it fragments the heap, and this device
   needs to run for months between reboots.
-- **WiFi setup:** QR-code scanning via the camera, replacing v3's
-  WiFiManager captive portal. See *QR-Code WiFi Setup Mode* section above
-  for flow.
+- **WiFi setup:** tzapu/WiFiManager captive-portal AP. See *WiFi Setup
+  Mode (WiFiManager)* section above for flow. (v4 through v7 used a
+  QR-code scan via the camera; v8 reverted to WiFiManager because QR
+  decode reliability was poor in real-world use.)
 - **WiFi reconnection:** explicit exponential backoff with `wifi_connected`
   flag (built-in auto-reconnect disabled via `WiFi.setAutoReconnect(false)`).
   Bind the app HTTP server in `http_server_begin()` after `net_begin()`
@@ -918,8 +944,9 @@ https://qifi.org all generate this format.
   same effect, useful for remote re-setup. The CoreS3 has no
   boot-pollable hardware button, so touch is the only physical option.
 - **Loop task stack:** raised to 16 KB via `SET_LOOP_TASK_STACK_SIZE(16 * 1024)`
-  at file scope in `cores3-hydro.ino`. Default 8 KB is too small for
-  quirc's decode pipeline running during `setup()` on the loop task.
+  at file scope in `cores3-hydro.ino`. Default 8 KB is too small for the
+  WiFiManager captive portal (its HTTP server, DNS responder, and HTML
+  rendering) running during `setup()` on the loop task.
 - **NTP:** Sync after WiFi connects on boot. Retry on 24h cycle.
 - **RTC battery:** The BM8563 needs a CR1220 coin cell in the holder on the
   back of the CoreS3 to retain time across power outages. Without it, every
@@ -981,19 +1008,13 @@ cores3-hydro/
 ├── light.{cpp,h}           // LTR-553ALS reader (internal bus via M5.In_I2C)
 ├── battery.{cpp,h}         // M5.Power.getBatteryLevel poll task
 ├── camera.{cpp,h}          // GC0308 init + /snapshot capture path
-├── wifi_setup.{cpp,h}      // QR-code WiFi setup, NVS creds, parser
+├── wifi_setup.{cpp,h}      // WiFiManager wrapper: portal + creds-clear
 ├── http_server.{cpp,h}     // Sync WebServer + handlers
 ├── ota.{cpp,h}             // GET /ota + POST /ota/upload (PSRAM-buffered)
 ├── net.{cpp,h}             // WiFi connect, reconnect, mDNS, ArduinoOTA, NTP
 ├── simulation.{cpp,h}      // random generators (sim_air_temp, etc.)
 ├── sim_state.{cpp,h}       // NVS persistence for per-sensor sim overrides
 ├── display.{cpp,h}         // M5Canvas-backed status screen
-├── quirc.{c,h}             // QR decoder (vendored from dlbeer/quirc,
-│                           //   small ESP32 patch for PSRAM image buffer)
-├── quirc_internal.h        //   "
-├── decode.c                //   "
-├── identify.c              //   "
-├── version_db.c            //   "
 ├── build.ps1               // arduino-cli wrapper: -Env, -Upload, -Monitor
 ├── setup.ps1               // one-time arduino-cli + library install
 ├── docs/

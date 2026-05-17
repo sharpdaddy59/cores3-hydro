@@ -76,16 +76,20 @@ sensor on Port A.
 2. **PSRAM is fragile if camera inits late.** `camera_start()` must run
    early in `setup()`, before WiFi and other heavy consumers. Camera frame
    buffers need a contiguous PSRAM allocation.
-3. **QR setup needs a printed or laptop-screen QR.** Phone screens cause
-   moiré aliasing that confuses quirc. Use-case limitation, not a bug —
-   don't try to "fix" it in firmware.
+3. **First-time WiFi setup is WiFiManager AP + captive portal.** Device
+   opens `cores3-hydro-setup-<last4mac>` (open SoftAP); user browses to
+   192.168.4.1, picks an SSID, enters the password. Portal times out at
+   3 min. Credentials live in the ESP32's native WiFi config, NOT in the
+   project's old `wifi` Preferences namespace (that's wiped on reset for
+   migration cleanup only).
 4. **`build.extra_flags` overwrites board defaults.** Use
    `compiler.cpp.extra_flags` instead — `build.ps1` already does this.
    Setting `build.extra_flags` silently strips `ARDUINO_M5STACK_CORES3` /
    `BOARD_HAS_PSRAM` and breaks the build in confusing ways.
 5. **Loop task stack** is raised to 16 KB via
    `SET_LOOP_TASK_STACK_SIZE(16 * 1024)` in the .ino. Required because
-   quirc decode runs on the loop task during setup.
+   WiFiManager's captive portal (HTTP + DNS + HTML rendering) runs on
+   the loop task during setup.
 6. **Touch credential-reset gesture** has 800 ms settle + 150 ms
    sustained-press requirement to avoid false positives. Don't shorten
    without testing — early versions fired spuriously.
@@ -112,8 +116,8 @@ sensor on Port A.
 
 ## Don'ts
 
-- Don't reintroduce `secrets.h` or hardcoded WiFi credentials. QR-based
-  setup is the one true path.
+- Don't reintroduce `secrets.h` or hardcoded WiFi credentials. The
+  WiFiManager captive portal is the one true path.
 - Don't migrate back to PlatformIO. PSRAM init is broken there.
 - Don't disable the watchdog. Hung sensor threads should reboot.
 - Don't add authentication assumptions to HTTP endpoints — the device is
@@ -124,7 +128,24 @@ sensor on Port A.
 
 ## Recent state
 
-- **v0.3.0 (current):** HTTP-based OTA firmware update. `GET /ota` serves
+- **v0.5.0 (current):** Reverted first-time WiFi setup from QR-code
+  scanning back to tzapu/WiFiManager (open SoftAP at
+  `cores3-hydro-setup-<last4mac>`, captive portal at
+  http://192.168.4.1/, 3-minute timeout). QR turned out to be too
+  unreliable in practice — phone-screen moiré against the GC0308 Bayer
+  pattern made decode flaky. Camera is kept (still used by
+  `/snapshot`). Quirc and the scan loop are deleted entirely; no
+  fallback. WiFi credentials now live in the ESP32's native WiFi
+  config (owned by WiFiManager); the legacy `wifi` Preferences namespace
+  is wiped on credential reset for migration cleanup. Home-page admin
+  button renamed "Reconfigure WiFi"; `POST /wifi/reset` response
+  message names the new AP. `wifi_setup.{cpp,h}` is now a thin
+  WiFiManager wrapper.
+- **v0.4.0:** Display gains user-configurable backlight brightness +
+  idle-driven dim/sleep timers (NVS-persisted via new `display`
+  namespace; `GET`/`POST /display`). Home page exposes brightness slider
+  + dim/sleep number inputs. Touch wakes the display.
+- **v0.3.0:** HTTP-based OTA firmware update. `GET /ota` serves
   an upload page; `POST /ota/upload` buffers the full `.bin` in PSRAM via
   `ps_malloc` before any byte hits flash, so a torn upload leaves the
   running partition untouched. Camera framebuffers are released at upload

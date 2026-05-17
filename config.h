@@ -7,7 +7,7 @@
 #pragma once
 
 // -- Identity ---------------------------------------------------------------
-#define FW_VERSION       "0.4.0"
+#define FW_VERSION       "0.5.0"
 // MDNS_HOSTNAME is the *base* default — actual runtime hostname comes from
 // device_hostname() in device_name.h, which appends a per-MAC suffix on
 // first boot and supports user override (NVS, /hostname endpoint).
@@ -58,7 +58,7 @@
 
 // -- Credential reset gesture -----------------------------------------------
 // Long-touch in the top-right corner during the first 3 s of setup() wipes
-// the saved WiFi credentials and re-enters WiFiManager's captive portal.
+// the saved WiFi credentials and reboots into WiFiManager's captive-portal AP.
 #define CRED_RESET_TOUCH_X      260
 #define CRED_RESET_TOUCH_Y        0
 #define CRED_RESET_TOUCH_W       60

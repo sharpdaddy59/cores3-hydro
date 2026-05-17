@@ -18,9 +18,9 @@
 #include <freertos/semphr.h>
 
 // Bump the Arduino loopTask stack from the 8 KB default to 16 KB. Needed
-// because wifi_setup_run() (running during setup() on the loopTask) calls
-// quirc, whose internal decode pipeline uses a significant amount of stack
-// in addition to the static buffers we already moved out of the function.
+// because wifi_setup_run() (running during setup() on the loopTask) hosts
+// the WiFiManager captive portal — its HTTP server, DNS responder, and
+// HTML template rendering can spike stack usage past the 8 KB default.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 #include "config.h"
@@ -134,11 +134,13 @@ void setup() {
   // fragment PSRAM. The camera frame buffers need a contiguous allocation
   // and we've seen failures (frame buffer malloc failed) when this runs
   // after net_begin(). Right after M5.begin() PSRAM is mostly empty.
-  // Camera failure is non-fatal: Wire1 is reclaimed regardless and the
-  // rest of the device continues to work.
+  // The camera is no longer used by WiFi setup, but /snapshot still needs
+  // it. Camera failure is non-fatal: Wire1 is reclaimed regardless and
+  // the rest of the device continues to work.
   camera_start();
 
-  // Bring up WiFi (WiFiManager captive portal on first boot, reconnect monitor after).
+  // Bring up WiFi (WiFiManager captive-portal AP on first boot, then
+  // explicit reconnect machine).
   net_begin();
 
   // Sensor threads own their data. Start them before HTTP so /sensors has values.

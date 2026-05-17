@@ -1,8 +1,10 @@
 // net.cpp — WiFi, mDNS, OTA, NTP plumbing.
 //
-// First boot: WiFiManager opens a captive portal AP named "cores3-hydro".
-// User connects with their phone, picks a WiFi, enters the password.
-// WiFiManager persists creds in NVS and connects.
+// First boot: tzapu/WiFiManager opens an open SoftAP named
+// "cores3-hydro-setup-<last4mac>" and serves a captive portal at
+// http://192.168.4.1/. The user picks an SSID and enters the password;
+// WiFiManager persists creds via the ESP32's native WiFi config and
+// connects in STA mode before returning.
 //
 // After that: a WiFi event handler tracks STA_GOT_IP and STA_DISCONNECTED.
 // Auto-reconnect is disabled — we manage reconnection explicitly with the
@@ -22,7 +24,7 @@
 #include "config.h"
 #include "sensors.h"
 #include "device_name.h"  // device_hostname() — runtime mDNS name
-#include "wifi_setup.h"   // QR-based credential capture, NVS storage
+#include "wifi_setup.h"   // WiFiManager captive-portal entry point
 
 // ---------------------------------------------------------------------------
 // State
@@ -155,51 +157,22 @@ void net_begin() {
   WiFi.setAutoReconnect(false);     // explicit reconnect machine below
   WiFi.onEvent(on_wifi_event);
 
-  // Production flow:
-  //   1. Try to load saved creds from NVS (Preferences "wifi" namespace)
-  //   2. If absent, run wifi_setup_run() which scans a QR code via the
-  //      camera and saves to NVS on success
-  //   3. Connect with the resulting creds
-  //   4. If connect fails, wipe NVS and reboot to re-enter setup mode
-  WiFi.persistent(false);   // wifi_creds_save() handles NVS persistence
-
-  WifiCreds creds;
-  if (!wifi_creds_load(&creds)) {
-    Serial.println("[net] no saved credentials; entering QR setup mode");
-    if (!wifi_setup_run(&creds)) {
-      Serial.println("[net] setup aborted; rebooting to retry");
-      delay(500);
-      ESP.restart();
-    }
-  } else {
-    Serial.printf("[net] using saved credentials for '%s'\n", creds.ssid.c_str());
-  }
-
-  M5.Display.fillScreen(TFT_NAVY);
-  M5.Display.setTextColor(TFT_WHITE, TFT_NAVY);
-  M5.Display.setTextSize(2);
-  M5.Display.setCursor(10, 10);
-  M5.Display.println("Connecting...");
-  M5.Display.setTextSize(1);
-  M5.Display.setCursor(10, 50);
-  M5.Display.printf("SSID: %s", creds.ssid.c_str());
-
-  WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
-
-  uint32_t deadline = millis() + 30000;
-  while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - deadline) < 0) {
-    delay(200);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[net] connect failed; clearing creds and rebooting to setup");
-    wifi_creds_clear();
-    M5.Display.setCursor(10, 80);
-    M5.Display.println("Connect failed!");
-    M5.Display.setCursor(10, 100);
-    M5.Display.println("Rebooting to setup...");
+  // First boot: WiFiManager opens its captive portal (open SoftAP at
+  // 192.168.4.1) and blocks until the user picks an SSID + enters a
+  // password. Subsequent boots: the same call sees stored credentials
+  // and just reconnects in STA mode without opening the portal. Either
+  // way, on `true` return WiFi is up; on `false` (portal timeout) we
+  // reboot and try again.
+  if (!wifi_setup_run()) {
+    Serial.println("[net] WiFi setup did not complete; rebooting");
+    M5.Display.fillScreen(TFT_NAVY);
+    M5.Display.setTextColor(TFT_WHITE, TFT_NAVY);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(10, 10);
+    M5.Display.println("Setup timed out");
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(10, 50);
+    M5.Display.println("Rebooting to retry...");
     delay(2500);
     ESP.restart();
   }

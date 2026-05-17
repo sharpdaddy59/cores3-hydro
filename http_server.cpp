@@ -307,8 +307,8 @@ static void handle_root() {
     "    <span class=\"muted\">&nbsp; &mdash; upload a new <code>.bin</code> from your browser.</span>\n"
     "  </p>\n"
     "  <p>\n"
-    "    <button class=\"danger\" onclick=\"resetWifi()\">Reset Wi-Fi credentials</button>\n"
-    "    <span class=\"muted\">&nbsp; &mdash; wipes saved Wi-Fi and reboots into QR setup.</span>\n"
+    "    <button class=\"danger\" onclick=\"resetWifi()\">Reconfigure WiFi</button>\n"
+    "    <span class=\"muted\">&nbsp; &mdash; wipes saved Wi-Fi and reboots into the setup AP.</span>\n"
     "  </p>\n"
     "\n"
     "  <script>\n"
@@ -362,7 +362,7 @@ static void handle_root() {
     "  }\n"
     "\n"
     "  async function resetWifi() {\n"
-    "    if (!confirm('Wipe Wi-Fi credentials and reboot the device into QR setup mode?')) return;\n"
+    "    if (!confirm('Wipe Wi-Fi credentials and reboot into WiFi setup AP mode?')) return;\n"
     "    try {\n"
     "      await fetch('/wifi/reset', {method:'POST'});\n"
     "      fb.textContent = 'Device is rebooting...';\n"
@@ -701,7 +701,7 @@ static void handle_display() {
 }
 
 // ---------------------------------------------------------------------------
-// POST /wifi/reset — wipe stored WiFi creds and reboot to enter QR setup.
+// POST /wifi/reset — wipe stored WiFi creds and reboot into the setup AP.
 //
 // No auth (we're a LAN-trusted device). Useful for the agent to recover the
 // box if it ever ends up on a wrong network, or for a remote re-setup
@@ -715,7 +715,8 @@ static void handle_wifi_reset() {
   Serial.println("[http] /wifi/reset received; rebooting to setup");
   s_server.send(200, "text/plain",
                 "Wi-Fi credentials cleared. Device will reboot in 2s and "
-                "enter QR setup mode.");
+                "open the WiFi setup AP (cores3-hydro-setup-<mac>) at "
+                "http://192.168.4.1/.");
   delay(500);
   wifi_creds_clear();
   delay(1500);

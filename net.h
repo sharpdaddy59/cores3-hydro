@@ -1,9 +1,10 @@
 // net.h — WiFi, mDNS, OTA, NTP plumbing.
 //
 // Spec ordering: WiFiManager.autoConnect runs first (its own captive portal
-// HTTP server occupies port 80). Only after it exits do we bind the app's
-// WebServer. mDNS and OTA must be re-issued on every reconnect, not just
-// the first; that's wired through an SYSTEM_EVENT_STA_GOT_IP handler.
+// HTTP server occupies port 80 while open). Only after it returns do we
+// bind the app's WebServer. mDNS and OTA must be re-issued on every
+// reconnect, not just the first; that's wired through an
+// SYSTEM_EVENT_STA_GOT_IP handler.
 
 #pragma once
 
