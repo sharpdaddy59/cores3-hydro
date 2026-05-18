@@ -1,7 +1,7 @@
 // ds18b20.cpp — DS18B20 reader task.
 //
 // The Grove DS18B20 unit used in this build ships with the 4.7k pullup
-// integrated, so no external pullup is needed on GPIO 9.
+// integrated, so no external pullup is needed on GPIO 8.
 //
 // The 750 ms conversion is handled with vTaskDelay() — yielding to the
 // scheduler inherently feeds the task watchdog. Do not disable the watchdog.

@@ -1,5 +1,16 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v10)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v11)
 
+> **v11 changes:** Fix DS18B20 pin assignment. The spec and config had
+> `PIN_DS18B20_DATA = 9`, but on the M5Stack CoreS3 DIN Base Port B's
+> Grove pin 1 (yellow, the 1-Wire data line) actually routes to **GPIO
+> 8**, not GPIO 9 — GPIO 9 is Grove pin 2 (the unused "white" pin for a
+> 1-Wire device). The wrong-pin guess was latent because no real DS18B20
+> had been wired up until now; like the DHT20 `Wire.begin` bug in v9,
+> simulation mode masked the gap. Fix is the one-line change in
+> `config.h`; the task logic in `ds18b20.cpp` is otherwise unchanged.
+> Documentation updated across `CLAUDE.md`, `config.h`, `ds18b20.{cpp,h}`,
+> and this spec to reflect GPIO 8. `FW_VERSION` bumps to `0.5.3`.
+>
 > **v10 changes:** Dashboard now shows temperatures in **Fahrenheit**.
 > The on-screen `WATER` and `AIR` rows display `°F` instead of `°C`; a
 > small `c_to_f()` helper in `display.cpp` converts at the printf site.
@@ -229,7 +240,7 @@ glance.
   All I2C transactions must be guarded by a `SemaphoreHandle_t` mutex. Keep
   transactions short and release the mutex immediately after each read.
 
-### 2. DS18B20 Thread (Port B, GPIO 9, 1-Wire)
+### 2. DS18B20 Thread (Port B, GPIO 8, 1-Wire)
 - **Interval:** Every 10 seconds
 - **Reads:** Water temperature (°C)
 - **Writes:** `global.water_temp`, `global.seconds_since_boot_water`
@@ -939,7 +950,7 @@ wipes it once on reset for migration cleanup but never writes to it.
   - `m5stack/M5GFX` — pulled in by M5Unified, provides M5Canvas
   - `bblanchon/ArduinoJson` (v7) — JSON serialization
   - `milesburton/DallasTemperature` + `paulstoffregen/OneWire` —
-    DS18B20 over 1-Wire on GPIO 9
+    DS18B20 over 1-Wire on GPIO 8
   - DHT20 read inline in `dht20.cpp` — no library needed; protocol is
     simple enough to keep in 30 lines and saves a dependency
   - LTR-553 read inline in `light.cpp` via `M5.In_I2C` — no library needed
@@ -1027,7 +1038,7 @@ cores3-hydro/
 │                           //   timezone, hardcoded-WiFi gesture geometry
 ├── sensors.h               // SensorState struct (std::atomic fields)
 ├── dht20.{cpp,h}           // DHT20 reader (Port A, I2C, inline driver)
-├── ds18b20.{cpp,h}         // DS18B20 reader (Port B, GPIO 9, 1-Wire)
+├── ds18b20.{cpp,h}         // DS18B20 reader (Port B, GPIO 8, 1-Wire)
 ├── light.{cpp,h}           // LTR-553ALS reader (internal bus via M5.In_I2C)
 ├── battery.{cpp,h}         // M5.Power.getBatteryLevel poll task
 ├── camera.{cpp,h}          // GC0308 init + /snapshot capture path

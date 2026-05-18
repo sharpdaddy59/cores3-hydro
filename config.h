@@ -7,7 +7,7 @@
 #pragma once
 
 // -- Identity ---------------------------------------------------------------
-#define FW_VERSION       "0.5.2"
+#define FW_VERSION       "0.5.3"
 // MDNS_HOSTNAME is the *base* default — actual runtime hostname comes from
 // device_hostname() in device_name.h, which appends a per-MAC suffix on
 // first boot and supports user override (NVS, /hostname endpoint).
@@ -51,10 +51,10 @@
 #define WIFI_BACKOFF_CAP_MS  300000
 
 // -- Pin assignments --------------------------------------------------------
-// DS18B20 lives on Port B, GPIO 9, 1-Wire. The Grove DS18B20 unit used in
+// DS18B20 lives on Port B, GPIO 8, 1-Wire. The Grove DS18B20 unit used in
 // this build has the 4.7k pullup integrated into the harness — no external
 // pullup needed.
-#define PIN_DS18B20_DATA          9
+#define PIN_DS18B20_DATA          8
 
 // -- Credential reset gesture -----------------------------------------------
 // Long-touch in the top-right corner during the first 3 s of setup() wipes
