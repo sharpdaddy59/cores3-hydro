@@ -36,7 +36,7 @@ migrate back to PIO.
 
 | Subsystem | Bus | Pin / addr | Notes |
 |-----------|-----|------------|-------|
-| DHT20 air temp + humidity | Port A I²C (`Wire`) | 0x38 | GPIO 1 SDA, GPIO 2 SCL |
+| DHT20 air temp + humidity | Port A I²C (`Wire`) | 0x38 | GPIO 2 SDA, GPIO 1 SCL — caller must `Wire.begin(2, 1)` |
 | DS18B20 water temp | Port B 1-Wire | GPIO 9 | Grove unit has integrated 4.7k pullup |
 | LTR-553ALS light | Internal I²C (`Wire1`) | 0x23 | Shares bus with camera SCCB |
 | GC0308 camera | Internal I²C SCCB + parallel | — | RGB565 VGA, no hardware JPEG |

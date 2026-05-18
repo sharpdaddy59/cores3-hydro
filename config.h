@@ -7,7 +7,7 @@
 #pragma once
 
 // -- Identity ---------------------------------------------------------------
-#define FW_VERSION       "0.5.0"
+#define FW_VERSION       "0.5.2"
 // MDNS_HOSTNAME is the *base* default — actual runtime hostname comes from
 // device_hostname() in device_name.h, which appends a per-MAC suffix on
 // first boot and supports user override (NVS, /hostname endpoint).

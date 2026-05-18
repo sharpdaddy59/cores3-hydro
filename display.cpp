@@ -25,6 +25,11 @@
 
 static M5Canvas s_canvas(&M5.Display);
 
+// Display shows Fahrenheit. The atomics, NVS state, and HTTP API all
+// stay in Celsius — the upstream agent (OpenClaw) reads /sensors and
+// expects °C per the spec's HTTP contract. Convert only at the printf.
+static inline float c_to_f(float c) { return c * 9.0f / 5.0f + 32.0f; }
+
 // ---------------------------------------------------------------------------
 // OTA-in-progress takeover screen. Painted instead of the dashboard while
 // g_state.ota_in_progress is set. Intentionally minimal — no live stats,
@@ -82,13 +87,13 @@ static void draw_frame() {
   float wt = g_state.water_temp.load();
   if (std::isnan(wt)) {
     s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    s_canvas.printf("WATER  --.-C  --");
+    s_canvas.printf("WATER  --.-F  --");
   } else if (sim_water) {
     s_canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
-    s_canvas.printf("WATER  %4.1fC  *SIM", wt);
+    s_canvas.printf("WATER  %4.1fF  *SIM", c_to_f(wt));
   } else {
     s_canvas.setTextColor(wt > 26.0f ? TFT_RED : TFT_CYAN, TFT_BLACK);
-    s_canvas.printf("WATER  %4.1fC  OK", wt);
+    s_canvas.printf("WATER  %4.1fF  OK", c_to_f(wt));
   }
   y += 30;
 
@@ -98,13 +103,13 @@ static void draw_frame() {
   float hu = g_state.humidity.load();
   if (std::isnan(at) || std::isnan(hu)) {
     s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    s_canvas.printf("AIR    --.-C  --%%");
+    s_canvas.printf("AIR    --.-F  --%%");
   } else if (sim_air) {
     s_canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
-    s_canvas.printf("AIR    %4.1fC  %2d%% *", at, (int)hu);
+    s_canvas.printf("AIR    %4.1fF  %2d%% *", c_to_f(at), (int)hu);
   } else {
     s_canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    s_canvas.printf("AIR    %4.1fC  %2d%%", at, (int)hu);
+    s_canvas.printf("AIR    %4.1fF  %2d%%", c_to_f(at), (int)hu);
   }
   y += 30;
 

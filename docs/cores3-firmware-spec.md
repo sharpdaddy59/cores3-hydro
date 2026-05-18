@@ -1,5 +1,28 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v8)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v10)
 
+> **v10 changes:** Dashboard now shows temperatures in **Fahrenheit**.
+> The on-screen `WATER` and `AIR` rows display `°F` instead of `°C`; a
+> small `c_to_f()` helper in `display.cpp` converts at the printf site.
+> The water-warm threshold (`wt > 26.0f` → red tint) still compares in
+> Celsius — only the rendered string changes. **The HTTP API stays in
+> Celsius:** `/sensors` continues to emit `water_temp` and `air_temp` in
+> °C, the atomics in `g_state` are still °C, and NVS state is unchanged.
+> This is intentional — the upstream agent (OpenClaw) reads the HTTP
+> contract and expects metric units; the display change is purely
+> cosmetic. `FW_VERSION` bumps to `0.5.2`.
+>
+> **v9 changes:** Fix DHT20 never produced a real reading. The Port A
+> external Grove bus (`Wire`, SDA=GPIO 2, SCL=GPIO 1) was never initialized
+> as master — `M5.begin()` only brings up the internal `Wire1`, so the
+> DHT20 task's boot-time probe at 0x38 always NACKed and the task fell
+> through to the "idle, re-probe every 5 min" path forever. The bug was
+> latent because every prior bring-up ran with the air-temp simulation
+> override on, which bypasses the bus entirely; it only surfaced once a
+> real DHT20 unit was wired to Port A. Fix: call `Wire.begin(2, 1)` in
+> `setup()` immediately before `dht20_start()`, as the I2C-bus-topology
+> table has always required. No API or schema changes; no behavioral
+> changes for the existing simulated path. `FW_VERSION` bumps to `0.5.1`.
+>
 > **v8 changes:** Reverted first-time WiFi setup from QR-code scanning back
 > to **tzapu/WiFiManager** AP + captive portal. The QR path turned out to be
 > too fragile in practice — moiré aliasing against the GC0308's Bayer

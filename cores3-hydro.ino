@@ -143,6 +143,12 @@ void setup() {
   // explicit reconnect machine).
   net_begin();
 
+  // Port A external Grove I2C: SDA=GPIO 2, SCL=GPIO 1. M5.begin() only
+  // brings up the internal Wire1 bus (touch/PMIC/RTC/IMU/LTR-553/camera
+  // SCCB); Port A's `Wire` stays uninitialized until we do this. Spec
+  // doc §"I2C Bus Topology" explicitly puts this on the caller.
+  Wire.begin(2, 1);
+
   // Sensor threads own their data. Start them before HTTP so /sensors has values.
   dht20_start();
   ds18b20_start();
