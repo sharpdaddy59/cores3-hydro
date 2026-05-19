@@ -215,6 +215,10 @@ static void handle_root() {
     "    .disp-row { display:flex; gap:0.6em; align-items:center;\n"
     "                margin: 0.4em 0; flex-wrap:wrap; }\n"
     "    .disp-row label { flex: 0 0 8em; }\n"
+    "    /* The toggle is also a <label>, but we don't want the prose-label\n"
+    "       width applied to it — otherwise the slider knob's 26px translate\n"
+    "       leaves it sitting in the middle of an 8em-wide track. */\n"
+    "    .disp-row .toggle { flex: 0 0 54px; }\n"
     "    .disp-row input[type=range] { flex: 1; min-width: 12em; }\n"
     "    .disp-row input[type=number] {\n"
     "      width: 6em; padding: 0.3em 0.4em; font: inherit;\n"
@@ -295,6 +299,15 @@ static void handle_root() {
     "    <label for=\"disp-sleep\">Sleep after (s)</label>\n"
     "    <input id=\"disp-sleep\" type=\"number\" min=\"0\" max=\"86400\" step=\"1\">\n"
     "    <span class=\"muted\" style=\"font-size:0.85em\">0 disables sleep</span>\n"
+    "  </div>\n"
+    "  <div class=\"disp-row\">\n"
+    "    <label for=\"disp-flip\">Mounted upside down</label>\n"
+    "    <label class=\"toggle\">\n"
+    "      <input id=\"disp-flip\" type=\"checkbox\">\n"
+    "      <span class=\"slider\"></span>\n"
+    "    </label>\n"
+    "    <span class=\"muted\" style=\"font-size:0.85em\">\n"
+    "      Flips display + camera 180&deg; so the Grove cables hang down.</span>\n"
     "  </div>\n"
     "  <div class=\"disp-actions\">\n"
     "    <button onclick=\"saveDisplay()\">Save</button>\n"
@@ -427,6 +440,7 @@ static void handle_root() {
     "  const dispOut    = document.getElementById('disp-bright-out');\n"
     "  const dispDim    = document.getElementById('disp-dim');\n"
     "  const dispSleep  = document.getElementById('disp-sleep');\n"
+    "  const dispFlip   = document.getElementById('disp-flip');\n"
     "\n"
     "  dispBright.addEventListener('input', () => { dispOut.textContent = dispBright.value; });\n"
     "\n"
@@ -435,6 +449,7 @@ static void handle_root() {
     "    dispOut.textContent = state.brightness;\n"
     "    dispDim.value   = Math.round(state.dim_ms   / 1000);\n"
     "    dispSleep.value = Math.round(state.sleep_ms / 1000);\n"
+    "    dispFlip.checked = !!state.flipped;\n"
     "  }\n"
     "\n"
     "  async function loadDisplay() {\n"
@@ -448,7 +463,9 @@ static void handle_root() {
     "    const b  = Math.max(0, Math.min(255, parseInt(dispBright.value, 10) || 0));\n"
     "    const ds = Math.max(0, parseInt(dispDim.value,   10) || 0);\n"
     "    const ss = Math.max(0, parseInt(dispSleep.value, 10) || 0);\n"
-    "    const qs = 'brightness=' + b + '&dim_ms=' + (ds*1000) + '&sleep_ms=' + (ss*1000);\n"
+    "    const fl = dispFlip.checked ? 'on' : 'off';\n"
+    "    const qs = 'brightness=' + b + '&dim_ms=' + (ds*1000) +\n"
+    "               '&sleep_ms=' + (ss*1000) + '&flipped=' + fl;\n"
     "    dispFb.textContent = 'Saving...';\n"
     "    try {\n"
     "      const r = await fetch('/display?' + qs, {method:'POST'});\n"
@@ -635,6 +652,7 @@ static void emit_display_state(int code) {
   doc["brightness"] = g_state.display_brightness.load();
   doc["dim_ms"]     = g_state.display_dim_ms.load();
   doc["sleep_ms"]   = g_state.display_sleep_ms.load();
+  doc["flipped"]    = g_state.display_flipped.load();
   String out;
   serializeJson(doc, out);
   s_server.send(code, "application/json", out);
@@ -650,7 +668,21 @@ static void handle_display() {
     return;
   }
 
-  bool changed_bright = false, changed_dim = false, changed_sleep = false;
+  bool changed_bright = false, changed_dim = false, changed_sleep = false,
+       changed_flip   = false;
+
+  if (s_server.hasArg("flipped")) {
+    int v = parse_sim_value(s_server.arg("flipped"));   // same on/off/1/0/true/false grammar
+    if (v < 0) {
+      s_server.send(400, "text/plain", "flipped must be on/off/true/false/1/0");
+      return;
+    }
+    bool desired = (v == 1);
+    if (g_state.display_flipped.load() != desired) {
+      g_state.display_flipped.store(desired);
+      changed_flip = true;
+    }
+  }
 
   if (s_server.hasArg("brightness")) {
     long v = s_server.arg("brightness").toInt();
@@ -690,10 +722,18 @@ static void handle_display() {
   if (changed_bright) display_settings_save_brightness();
   if (changed_dim)    display_settings_save_dim_ms();
   if (changed_sleep)  display_settings_save_sleep_ms();
+  if (changed_flip) {
+    display_settings_save_flip();
+    // Apply both halves of the orientation flip immediately. Display
+    // rotation 3 = landscape, 180° from rotation 1. The camera sensor
+    // gets matching hmirror+vflip so /snapshot lines up with the screen.
+    M5.Display.setRotation(g_state.display_flipped.load() ? 3 : 1);
+    camera_set_flip(g_state.display_flipped.load());
+  }
 
   // Treat any change as user activity — they're at the device. Without
   // this, lowering the dim timeout while idle would dim the screen mid-edit.
-  if (changed_bright || changed_dim || changed_sleep) {
+  if (changed_bright || changed_dim || changed_sleep || changed_flip) {
     g_state.last_touch_ms.store(millis());
   }
 

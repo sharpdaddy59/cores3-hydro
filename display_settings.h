@@ -6,7 +6,9 @@
 // changes any of them via POST /display.
 //
 // NVS namespace: "display". Keys: "bright" (uint8 0..255), "dim_ms"
-// (uint32, 0=disabled), "sleep_ms" (uint32, 0=disabled).
+// (uint32, 0=disabled), "sleep_ms" (uint32, 0=disabled), "flip" (uint8
+// 0/1 — when 1, display rotation flips 180° and the camera is mirrored
+// to match, for upside-down mounting).
 
 #pragma once
 
@@ -24,3 +26,4 @@ void display_settings_load();
 void display_settings_save_brightness();
 void display_settings_save_dim_ms();
 void display_settings_save_sleep_ms();
+void display_settings_save_flip();

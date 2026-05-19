@@ -1,5 +1,28 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v11)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v12)
 
+> **v12 changes:** Add a user-toggleable "Mounted upside down" orientation
+> flip that rotates both the display and the camera 180° together. The use
+> case is mechanical: with the unit mounted normally, the Grove cable
+> emerging from Port A (and any thick water-temp lead) exits the top of
+> the chassis and droops down across the screen. Mounting the unit
+> inverted routes the cables down behind, but then the display reads
+> upside down and `/snapshot` images come out flipped. The new flag
+> handles both halves at once: display rotation switches from `1` to `3`
+> (landscape, 180°), and the GC0308 sensor gets `set_hmirror(1)` +
+> `set_vflip(1)` so captured frames match the screen orientation. Touch
+> coordinates rotate with the display, so the credential-reset top-right
+> zone tracks correctly. Settings live in `g_state.display_flipped`,
+> persisted via the existing `display` NVS namespace (new key `flip`,
+> uint8 0/1), and exposed as a new `flipped` boolean on `GET`/`POST
+> /display`. The home page's Display section gains an orientation toggle.
+> Setup order changes slightly: `display_settings_load()` now runs right
+> after `M5.begin()` so the very first `setRotation()` call uses the
+> stored orientation — otherwise the boot screen and credential-reset
+> prompt would briefly display in the wrong orientation. New
+> `camera_set_flip(bool)` exposes the SCCB write at runtime; it holds the
+> camera capture mutex so it can't race with an in-flight `/snapshot`.
+> `FW_VERSION` bumps to `0.6.0`.
+>
 > **v11 changes:** Fix DS18B20 pin assignment. The spec and config had
 > `PIN_DS18B20_DATA = 9`, but on the M5Stack CoreS3 DIN Base Port B's
 > Grove pin 1 (yellow, the 1-Wire data line) actually routes to **GPIO
@@ -681,7 +704,8 @@ Returns the current display power settings as JSON. Content-Type:
 {
   "brightness": 180,
   "dim_ms":     30000,
-  "sleep_ms":   300000
+  "sleep_ms":   300000,
+  "flipped":    false
 }
 ```
 
@@ -690,19 +714,24 @@ Returns the current display power settings as JSON. Content-Type:
   of `brightness`. `0` disables the dim transition.
 - `sleep_ms` — milliseconds of touch idle before the backlight goes
   fully off and the canvas blit is skipped. `0` disables sleep.
+- `flipped` — `true` when the unit is mounted upside down. Display
+  rotates 180° (rotation `3` instead of `1`) and the camera sensor's
+  hmirror+vflip are both set so `/snapshot` images match the screen.
 
 ### `POST /display?<field>=<value>[&<field>=<value>...]`
-Updates one or more display settings. All three fields are optional;
+Updates one or more display settings. All four fields are optional;
 only listed fields are changed. Validation:
 
 - `brightness`: integer 0..255
 - `dim_ms`, `sleep_ms`: integer 0..86400000 (24 h)
+- `flipped`: `on`/`off`/`true`/`false`/`1`/`0`
 
 On success: each changed field is persisted to NVS (`display` namespace,
-keys `bright`, `dim_ms`, `sleep_ms`), the wake timestamp is reset (any
-POST is treated as user activity), and 200 is returned with the same JSON
-shape as `GET /display`. On invalid input, returns 400 with a short text
-body. Other methods return 405.
+keys `bright`, `dim_ms`, `sleep_ms`, `flip`); if `flipped` changed the
+display rotation and camera hmirror/vflip are reapplied immediately. The
+wake timestamp is reset (any POST is treated as user activity), and 200
+is returned with the same JSON shape as `GET /display`. On invalid
+input, returns 400 with a short text body. Other methods return 405.
 
 OTA-in-progress overrides sleep — the takeover screen is always shown at
 `brightness` regardless of idle state.

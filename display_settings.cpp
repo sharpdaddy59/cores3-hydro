@@ -10,6 +10,7 @@ static const char *NS_DISPLAY = "display";
 static const char *KEY_BRIGHT = "bright";
 static const char *KEY_DIM    = "dim_ms";
 static const char *KEY_SLEEP  = "sleep_ms";
+static const char *KEY_FLIP   = "flip";
 
 void display_settings_load() {
   // Seed the wake timestamp now so the dim/sleep timers count from boot,
@@ -24,16 +25,19 @@ void display_settings_load() {
   uint8_t  bright   = prefs.getUChar(KEY_BRIGHT, g_state.display_brightness.load());
   uint32_t dim_ms   = prefs.getUInt(KEY_DIM,    g_state.display_dim_ms.load());
   uint32_t sleep_ms = prefs.getUInt(KEY_SLEEP,  g_state.display_sleep_ms.load());
+  bool     flip     = prefs.getUChar(KEY_FLIP,  g_state.display_flipped.load() ? 1 : 0) != 0;
   prefs.end();
 
   g_state.display_brightness.store(bright);
   g_state.display_dim_ms.store(dim_ms);
   g_state.display_sleep_ms.store(sleep_ms);
+  g_state.display_flipped.store(flip);
 
-  Serial.printf("[display] loaded: brightness=%u dim_ms=%lu sleep_ms=%lu\n",
+  Serial.printf("[display] loaded: brightness=%u dim_ms=%lu sleep_ms=%lu flip=%d\n",
                 (unsigned)bright,
                 (unsigned long)dim_ms,
-                (unsigned long)sleep_ms);
+                (unsigned long)sleep_ms,
+                flip ? 1 : 0);
 }
 
 static bool open_rw(Preferences &prefs, const char *key_for_log) {
@@ -62,5 +66,12 @@ void display_settings_save_sleep_ms() {
   Preferences prefs;
   if (!open_rw(prefs, KEY_SLEEP)) return;
   prefs.putUInt(KEY_SLEEP, g_state.display_sleep_ms.load());
+  prefs.end();
+}
+
+void display_settings_save_flip() {
+  Preferences prefs;
+  if (!open_rw(prefs, KEY_FLIP)) return;
+  prefs.putUChar(KEY_FLIP, g_state.display_flipped.load() ? 1 : 0);
   prefs.end();
 }

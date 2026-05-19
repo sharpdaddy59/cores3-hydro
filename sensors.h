@@ -61,6 +61,13 @@ struct SensorState {
   std::atomic<uint32_t> display_dim_ms{30000};
   std::atomic<uint32_t> display_sleep_ms{300000};
   std::atomic<uint32_t> last_touch_ms{0};
+
+  // True when the unit is mounted upside down. Display rotation flips
+  // from 1 → 3 (landscape, 180° rotated) and the GC0308 camera's
+  // hmirror+vflip are both enabled so /snapshot frames come out the
+  // same way up as the user sees the screen. Loaded from NVS at boot
+  // (`display` namespace, key `flip`) and toggled via POST /display.
+  std::atomic<bool>     display_flipped{false};
 };
 
 extern SensorState g_state;

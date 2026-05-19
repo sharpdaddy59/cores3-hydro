@@ -97,7 +97,12 @@ void setup() {
   Serial.println();
   Serial.println("[boot] cores3-hydro " FW_VERSION);
 
-  M5.Display.setRotation(1);
+  // Load display settings (including the upside-down mount flag) before
+  // we paint anything so the boot screen, credential-reset prompt, and
+  // every subsequent frame all use the user's chosen orientation.
+  display_settings_load();
+
+  M5.Display.setRotation(g_state.display_flipped.load() ? 3 : 1);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextSize(2);
@@ -121,12 +126,6 @@ void setup() {
   // NVS. Must run before net_begin() so WiFi.setHostname() / mDNS pick up
   // the right name on first connect.
   device_name_init();
-
-  // Load display brightness + idle timeouts from NVS. Must run before
-  // display_start() so the task picks up the user-configured brightness
-  // on its first tick. Also seeds last_touch_ms so the dim/sleep timers
-  // begin counting from boot rather than firing immediately.
-  display_settings_load();
 
   check_credential_reset();
 

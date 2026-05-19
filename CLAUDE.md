@@ -128,7 +128,21 @@ sensor on Port A.
 
 ## Recent state
 
-- **v0.5.0 (current):** Reverted first-time WiFi setup from QR-code
+- **v0.6.0 (current):** User-toggleable "Mounted upside down" orientation
+  flip on the home page. When enabled, display rotation switches from
+  `1` → `3` (landscape, 180°) and the GC0308 sensor's hmirror+vflip are
+  both set so `/snapshot` images match the screen. Use case: mount the
+  CoreS3 inverted so the Grove cable on Port A (the top of the chassis)
+  hangs down behind the unit instead of draping across the screen.
+  Persisted in NVS via the existing `display` namespace (new key
+  `flip`); exposed as `flipped` (bool) on `GET`/`POST /display`. New
+  `camera_set_flip(bool)` in `camera.cpp` writes hmirror+vflip over
+  SCCB at runtime, holding the capture mutex so it can't race with an
+  in-flight `/snapshot`. `display_settings_load()` now runs right after
+  `M5.begin()` so the very first `setRotation()` picks up the stored
+  orientation — otherwise the boot screen would briefly show in the
+  wrong orientation.
+- **v0.5.0:** Reverted first-time WiFi setup from QR-code
   scanning back to tzapu/WiFiManager (open SoftAP at
   `cores3-hydro-setup-<last4mac>`, captive portal at
   http://192.168.4.1/, 3-minute timeout). QR turned out to be too

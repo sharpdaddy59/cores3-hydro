@@ -35,3 +35,11 @@ void camera_stop();
 // Diagnostic getters — exposed via /status when serial logging is unreliable.
 bool camera_is_initialized();
 int  camera_last_error();        // 0 = no error or not yet attempted
+
+// Apply hmirror+vflip to the GC0308 to match the display's flip state.
+// When `flip` is true the sensor returns each frame 180° rotated so
+// /snapshot images line up with what the user sees on the screen when
+// the unit is mounted upside down. Called once during camera_start()
+// based on the loaded NVS state, and again from POST /display when the
+// user toggles orientation at runtime. No-op if the camera failed init.
+void camera_set_flip(bool flip);

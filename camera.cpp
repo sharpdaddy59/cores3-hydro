@@ -30,6 +30,7 @@
 
 #include "camera.h"
 #include "config.h"
+#include "sensors.h"
 
 // ---------------------------------------------------------------------------
 // CoreS3 GC0308 pin map. Authoritative source: m5stack/M5CoreS3
@@ -139,6 +140,12 @@ void camera_start() {
     sensor->set_ae_level(sensor, -1);
     sensor->set_gain_ctrl(sensor, 1);                 // auto gain on, but...
     sensor->set_gainceiling(sensor, GAINCEILING_2X);  // ...cap at 2x to limit noise
+
+    // Apply the user's mounting orientation. hmirror+vflip together = 180°,
+    // which matches the display rotation flip when display_flipped is set.
+    const bool flip = g_state.display_flipped.load();
+    sensor->set_hmirror(sensor, flip ? 1 : 0);
+    sensor->set_vflip(sensor, flip ? 1 : 0);
   }
 
   // Discard the first frame (GC0308 first-integration window is unreliable).
@@ -243,3 +250,17 @@ void camera_stop() {
 
 bool camera_is_initialized() { return s_init_ok; }
 int  camera_last_error()     { return s_last_err; }
+
+void camera_set_flip(bool flip) {
+  if (!s_init_ok) return;
+  sensor_t *sensor = esp_camera_sensor_get();
+  if (!sensor) return;
+  // hmirror+vflip both writes go over SCCB. Hold the capture mutex so we
+  // don't race with an in-flight /snapshot's frame2jpg.
+  if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    Serial.println("[camera] set_flip: timeout waiting for lock; applying anyway");
+  }
+  sensor->set_hmirror(sensor, flip ? 1 : 0);
+  sensor->set_vflip(sensor, flip ? 1 : 0);
+  if (s_lock) xSemaphoreGive(s_lock);
+}
