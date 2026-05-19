@@ -18,6 +18,7 @@
 #include "config.h"
 #include "wifi_setup.h"    // for wifi_creds_clear() in /wifi/reset
 #include "sim_state.h"     // for sim_state_save_* in /sim
+#include "units.h"         // user-selected temperature unit (C/F)
 #include "device_name.h"   // hostname getters/setter for /hostname
 #include "display_settings.h"  // for display_settings_save_* in /display
 #include "net.h"           // net_apply_hostname_change() after rename
@@ -35,24 +36,51 @@ static void emit_float_or_null(JsonDocument &doc, const char *key, float v, bool
 
 // ---------------------------------------------------------------------------
 // /sensors
+//
+// Per-sensor mode decides what we emit for each value:
+//   REAL or SIMULATED: the stored value, but only if the timestamp is fresh
+//     (older readings collapse to null so the agent doesn't act on stale data).
+//   DISABLED: null — the user explicitly turned this sensor off, so there is
+//     no meaningful value to report.
+//
+// Temperatures are converted to the user-selected unit. The `temperature_units`
+// field tells the agent which unit ("celsius" or "fahrenheit") to interpret
+// water_temp / air_temp in for this response. The per-sensor `status` object
+// disambiguates a null value: "real" | "simulated" | "disabled".
 // ---------------------------------------------------------------------------
 static void handle_sensors() {
   uint32_t now = now_seconds_since_boot();
+
+  SensorMode air_mode   = sensor_mode_from(g_state.air_mode.load());
+  SensorMode water_mode = sensor_mode_from(g_state.water_mode.load());
+  SensorMode light_mode = sensor_mode_from(g_state.light_mode.load());
 
   bool fresh_air   = reading_is_fresh(g_state.seconds_since_boot_air.load(),   now);
   bool fresh_water = reading_is_fresh(g_state.seconds_since_boot_water.load(), now);
   bool fresh_light = reading_is_fresh(g_state.seconds_since_boot_light.load(), now);
 
+  bool emit_air   = (air_mode   != SensorMode::OFF) && fresh_air;
+  bool emit_water = (water_mode != SensorMode::OFF) && fresh_water;
+  bool emit_light = (light_mode != SensorMode::OFF) && fresh_light;
+
   JsonDocument doc;
-  emit_float_or_null(doc, "water_temp", g_state.water_temp.load(), fresh_water);
-  emit_float_or_null(doc, "air_temp",   g_state.air_temp.load(),   fresh_air);
+
+  // Temperatures: convert raw Celsius to the user's chosen unit. NAN
+  // passes through temp_in_user_unit unchanged, so the null branch below
+  // still fires for stale or unread values.
+  emit_float_or_null(doc, "water_temp",
+                     temp_in_user_unit(g_state.water_temp.load()), emit_water);
+  emit_float_or_null(doc, "air_temp",
+                     temp_in_user_unit(g_state.air_temp.load()),   emit_air);
 
   float h = g_state.humidity.load();
-  if (fresh_air && !std::isnan(h)) doc["humidity"] = (int)h;
-  else                              doc["humidity"] = nullptr;
+  if (emit_air && !std::isnan(h)) doc["humidity"] = (int)h;
+  else                             doc["humidity"] = nullptr;
 
-  if (fresh_light) doc["light"] = g_state.light_lux.load();
-  else             doc["light"] = nullptr;
+  if (emit_light) doc["light"] = g_state.light_lux.load();
+  else            doc["light"] = nullptr;
+
+  doc["temperature_units"] = temp_unit_label();
 
   doc["rssi"]          = g_state.wifi_rssi.load();
   doc["ss_boot_water"] = g_state.seconds_since_boot_water.load();
@@ -60,12 +88,15 @@ static void handle_sensors() {
   doc["ss_boot_light"] = g_state.seconds_since_boot_light.load();
   doc["wifi_ok"]       = g_state.wifi_connected.load();
 
-  // Per-sensor sim flags so the agent knows which fields it can trust.
-  // True = value came from sim_*() generators; false = real hardware read.
-  JsonObject sim = doc["simulated"].to<JsonObject>();
-  sim["air"]   = g_state.simulate_air.load();
-  sim["water"] = g_state.simulate_water.load();
-  sim["light"] = g_state.simulate_light.load();
+  // Per-sensor source-of-truth label. "real" = hardware read, "simulated"
+  // = sim_*() generator, "disabled" = sensor intentionally off (value is
+  // null and the agent should treat the field as not-present rather than
+  // missing-due-to-error). Replaces the pre-v0.7.0 boolean `simulated`
+  // object.
+  JsonObject status = doc["status"].to<JsonObject>();
+  status["air"]   = sensor_mode_label(air_mode);
+  status["water"] = sensor_mode_label(water_mode);
+  status["light"] = sensor_mode_label(light_mode);
 
   String out;
   serializeJson(doc, out);
@@ -166,14 +197,30 @@ static void handle_root() {
     "    li { margin: 0.4em 0; }\n"
     "    .muted { color:#666; }\n"
     "\n"
-    "    /* Sim toggle row */\n"
+    "    /* Sim mode row */\n"
     "    .sim-row { display:flex; align-items:center; gap:0.8em;\n"
-    "               padding: 0.5em 0; border-bottom:1px solid #f0f0f0; }\n"
+    "               padding: 0.5em 0; border-bottom:1px solid #f0f0f0;\n"
+    "               flex-wrap: wrap; }\n"
     "    .sim-row:last-child { border-bottom: none; }\n"
     "    .sim-name { flex:0 0 6em; font-weight: 600; }\n"
-    "    .sim-state { flex: 1; font-size: 0.9em; }\n"
-    "    .sim-state.real { color: #0a7d2e; }\n"
-    "    .sim-state.sim  { color: #b07000; }\n"
+    "    .sim-state { flex: 1; font-size: 0.9em; min-width: 12em; }\n"
+    "    .sim-state.real     { color: #0a7d2e; }\n"
+    "    .sim-state.sim      { color: #b07000; }\n"
+    "    .sim-state.disabled { color: #888; font-style: italic; }\n"
+    "    .sim-row select {\n"
+    "      padding: 0.35em 0.4em; font: inherit;\n"
+    "      border: 1px solid #ccc; border-radius:4px; background:white;\n"
+    "    }\n"
+    "    .sim-row select:disabled { opacity: 0.5; cursor: not-allowed; }\n"
+    "\n"
+    "    /* Units row */\n"
+    "    .units-row { display:flex; gap:0.6em; align-items:center;\n"
+    "                 margin: 0.4em 0; flex-wrap: wrap; }\n"
+    "    .units-row label.lbl { flex: 0 0 8em; }\n"
+    "    .units-row select {\n"
+    "      padding: 0.35em 0.5em; font: inherit;\n"
+    "      border: 1px solid #ccc; border-radius:4px; background:white;\n"
+    "    }\n"
     "\n"
     "    /* Toggle switch (CSS-only) */\n"
     "    .toggle { position:relative; display:inline-block; width:54px; height:28px; }\n"
@@ -244,10 +291,29 @@ static void handle_root() {
     "    <li><a href=\"/snapshot\">/snapshot</a> &mdash; current camera frame (JPEG)</li>\n"
     "  </ul>\n"
     "\n"
-    "  <h2>Sensor simulation</h2>\n"
-    "  <p class=\"muted\">Toggle a sensor to simulated mode to feed the agent\n"
-    "     fake-but-plausible data without unplugging hardware. Useful for\n"
-    "     development, demos, or quarantining a misbehaving sensor.\n"
+    "  <h2>Temperature units</h2>\n"
+    "  <p class=\"muted\">Both the display and the <code>/sensors</code> JSON\n"
+    "     emit temperatures in the unit you pick here. The response also\n"
+    "     includes a <code>temperature_units</code> field so any client\n"
+    "     knows which scale the numbers are on.</p>\n"
+    "  <div class=\"units-row\">\n"
+    "    <label class=\"lbl\" for=\"units-temp\">Temperature</label>\n"
+    "    <select id=\"units-temp\">\n"
+    "      <option value=\"fahrenheit\">Fahrenheit (°F)</option>\n"
+    "      <option value=\"celsius\">Celsius (°C)</option>\n"
+    "    </select>\n"
+    "  </div>\n"
+    "  <div id=\"units-feedback\" class=\"feedback\"></div>\n"
+    "\n"
+    "  <h2>Sensor mode</h2>\n"
+    "  <p class=\"muted\">Each sensor can run in one of three modes:\n"
+    "     <strong>Real</strong> reads the hardware,\n"
+    "     <strong>Simulated</strong> feeds the agent random plausible values\n"
+    "     (useful for development, demos, or quarantining a misbehaving\n"
+    "     sensor), and <strong>Disabled</strong> turns the sensor off entirely\n"
+    "     &mdash; the value reads as <code>null</code> with\n"
+    "     <code>status: \"disabled\"</code>, signaling that the absence is\n"
+    "     intentional (e.g. growing microgreens with no water tank).\n"
     "     Persists across reboots.</p>\n"
     "\n"
     "  <div id=\"sim-air\"   class=\"sim-row\"></div>\n"
@@ -330,22 +396,29 @@ static void handle_root() {
     "    {id:'water', label:'Water', note:'DS18B20: water_temp'},\n"
     "    {id:'light', label:'Light', note:'LTR-553ALS: light'}\n"
     "  ];\n"
+    "  const MODES = [\n"
+    "    {value:'real',      pretty:'real hardware', cls:'real'},\n"
+    "    {value:'simulated', pretty:'SIMULATED',     cls:'sim'},\n"
+    "    {value:'disabled',  pretty:'disabled',      cls:'disabled'}\n"
+    "  ];\n"
     "  const fb = document.getElementById('sim-feedback');\n"
     "\n"
     "  function render(state) {\n"
     "    SENSORS.forEach(s => {\n"
-    "      const on = !!state[s.id];\n"
+    "      const mode = state[s.id] || 'real';\n"
+    "      const m = MODES.find(x => x.value === mode) || MODES[0];\n"
     "      const row = document.getElementById('sim-' + s.id);\n"
+    "      let opts = '';\n"
+    "      MODES.forEach(x => {\n"
+    "        const sel = x.value === mode ? ' selected' : '';\n"
+    "        opts += '<option value=\"'+x.value+'\"'+sel+'>'+x.pretty+'</option>';\n"
+    "      });\n"
     "      row.innerHTML =\n"
     "        '<span class=\"sim-name\">' + s.label + '</span>' +\n"
-    "        '<span class=\"sim-state ' + (on?'sim':'real') + '\">' +\n"
-    "          (on?'SIMULATED':'real hardware') +\n"
+    "        '<span class=\"sim-state ' + m.cls + '\">' + m.pretty +\n"
     "          ' &middot; <span class=\"muted\">'+s.note+'</span></span>' +\n"
-    "        '<label class=\"toggle\">' +\n"
-    "          '<input type=\"checkbox\" '+(on?'checked':'')+' data-id=\"'+s.id+'\">' +\n"
-    "          '<span class=\"slider\"></span>' +\n"
-    "        '</label>';\n"
-    "      row.querySelector('input').addEventListener('change', onToggle);\n"
+    "        '<select data-id=\"'+s.id+'\">' + opts + '</select>';\n"
+    "      row.querySelector('select').addEventListener('change', onModeChange);\n"
     "    });\n"
     "  }\n"
     "\n"
@@ -356,9 +429,10 @@ static void handle_root() {
     "    } catch(e) { fb.textContent = 'Could not load: ' + e; }\n"
     "  }\n"
     "\n"
-    "  async function onToggle(ev) {\n"
+    "  async function onModeChange(ev) {\n"
     "    const id = ev.target.dataset.id;\n"
-    "    const value = ev.target.checked ? 'on' : 'off';\n"
+    "    const value = ev.target.value;\n"
+    "    const prev  = ev.target.dataset.prev || 'real';\n"
     "    ev.target.disabled = true;\n"
     "    fb.textContent = 'Setting ' + id + ' = ' + value + '...';\n"
     "    try {\n"
@@ -366,11 +440,42 @@ static void handle_root() {
     "      if (!r.ok) throw new Error(r.status);\n"
     "      const state = await r.json();\n"
     "      render(state);\n"
-    "      fb.textContent = id + ' is now ' + (state[id]?'SIMULATED':'real');\n"
+    "      fb.textContent = id + ' is now ' + state[id];\n"
     "    } catch(e) {\n"
     "      fb.textContent = 'Failed: ' + e;\n"
-    "      ev.target.checked = !ev.target.checked;\n"
+    "      ev.target.value = prev;\n"
     "      ev.target.disabled = false;\n"
+    "    }\n"
+    "  }\n"
+    "\n"
+    "  /* ----- temperature units ----- */\n"
+    "  const unitsFb     = document.getElementById('units-feedback');\n"
+    "  const unitsSelect = document.getElementById('units-temp');\n"
+    "  unitsSelect.addEventListener('change', onUnitsChange);\n"
+    "\n"
+    "  async function loadUnits() {\n"
+    "    try {\n"
+    "      const r = await fetch('/units');\n"
+    "      const s = await r.json();\n"
+    "      unitsSelect.value = s.temperature_units || 'fahrenheit';\n"
+    "    } catch(e) { unitsFb.textContent = 'Could not load units: ' + e; }\n"
+    "  }\n"
+    "\n"
+    "  async function onUnitsChange() {\n"
+    "    const v = unitsSelect.value;\n"
+    "    unitsSelect.disabled = true;\n"
+    "    unitsFb.textContent = 'Setting units = ' + v + '...';\n"
+    "    try {\n"
+    "      const r = await fetch('/units?temperature_units=' +\n"
+    "                            encodeURIComponent(v), {method:'POST'});\n"
+    "      if (!r.ok) throw new Error(r.status);\n"
+    "      const s = await r.json();\n"
+    "      unitsSelect.value = s.temperature_units;\n"
+    "      unitsFb.textContent = 'Units saved: ' + s.temperature_units;\n"
+    "    } catch(e) {\n"
+    "      unitsFb.textContent = 'Failed: ' + e;\n"
+    "    } finally {\n"
+    "      unitsSelect.disabled = false;\n"
     "    }\n"
     "  }\n"
     "\n"
@@ -480,6 +585,7 @@ static void handle_root() {
     "  }\n"
     "\n"
     "  loadState();\n"
+    "  loadUnits();\n"
     "  loadHost();\n"
     "  loadDisplay();\n"
     "  </script>\n"
@@ -489,20 +595,26 @@ static void handle_root() {
 }
 
 // ---------------------------------------------------------------------------
-// /sim — per-sensor simulation override management.
+// /sim — per-sensor mode management.
 //
-//   GET  /sim                              → JSON of current flags
-//   POST /sim?air=on&water=off&light=auto  → set one or more flags
+//   GET  /sim                                          → JSON of current modes
+//   POST /sim?air=real&water=disabled&light=simulated  → set one or more modes
 //
-// Accepted values for each flag (case-insensitive):
-//   on, true,  1, sim   → simulate (use random generator)
-//   off, false, 0, auto → real hardware (default)
+// Accepted values for each mode (case-insensitive):
+//   real                       → REAL  — hardware reads
+//   sim, simulated             → SIMULATED — random values from sim_*()
+//   disabled, off, none        → DISABLED — value reads as null on /sensors
 //
 // All three params are optional; only listed sensors are changed. Unknown
 // values return 400. The change is persisted to NVS before responding so a
-// power cycle preserves the override state.
+// power cycle preserves it. The endpoint name and key set are kept for
+// backwards compat with the pre-v0.7.0 boolean grammar — but the boolean
+// shorthand (on/off/1/0/true/false/auto) is no longer accepted because
+// "off" was ambiguous with the new DISABLED state.
 // ---------------------------------------------------------------------------
 static int parse_sim_value(const String &v) {
+  // Kept as a 0/1 boolean parser specifically for /display?flipped=...
+  // which never grew the DISABLED state. /sim uses parse_sensor_mode below.
   String s = v;
   s.toLowerCase();
   if (s == "on"  || s == "true"  || s == "1" || s == "sim")  return 1;
@@ -510,15 +622,28 @@ static int parse_sim_value(const String &v) {
   return -1;   // invalid
 }
 
+static int parse_sensor_mode(const String &v) {
+  String s = v;
+  s.toLowerCase();
+  if (s == "real")                                return (int)SensorMode::REAL;
+  if (s == "sim" || s == "simulated")             return (int)SensorMode::SIMULATED;
+  if (s == "disabled" || s == "off" || s == "none") return (int)SensorMode::OFF;
+  return -1;
+}
+
+static void emit_sim_state(int code) {
+  JsonDocument doc;
+  doc["air"]   = sensor_mode_label(sensor_mode_from(g_state.air_mode.load()));
+  doc["water"] = sensor_mode_label(sensor_mode_from(g_state.water_mode.load()));
+  doc["light"] = sensor_mode_label(sensor_mode_from(g_state.light_mode.load()));
+  String out;
+  serializeJson(doc, out);
+  s_server.send(code, "application/json", out);
+}
+
 static void handle_sim() {
   if (s_server.method() == HTTP_GET) {
-    JsonDocument doc;
-    doc["air"]   = g_state.simulate_air.load();
-    doc["water"] = g_state.simulate_water.load();
-    doc["light"] = g_state.simulate_light.load();
-    String out;
-    serializeJson(doc, out);
-    s_server.send(200, "application/json", out);
+    emit_sim_state(200);
     return;
   }
   if (s_server.method() != HTTP_POST) {
@@ -528,28 +653,32 @@ static void handle_sim() {
 
   bool changed_air = false, changed_water = false, changed_light = false;
 
-  auto try_apply = [&](const char *name, std::atomic<bool> &flag, bool &changed) -> int {
+  auto try_apply = [&](const char *name, std::atomic<uint8_t> &field,
+                       bool &changed) -> int {
     if (!s_server.hasArg(name)) return 0;
-    int v = parse_sim_value(s_server.arg(name));
+    int v = parse_sensor_mode(s_server.arg(name));
     if (v < 0) return -1;
-    bool desired = (v == 1);
-    if (flag.load() != desired) {
-      flag.store(desired);
+    uint8_t desired = (uint8_t)v;
+    if (field.load() != desired) {
+      field.store(desired);
       changed = true;
     }
     return 0;
   };
 
-  if (try_apply("air",   g_state.simulate_air,   changed_air)   < 0) {
-    s_server.send(400, "text/plain", "bad value for air");
+  if (try_apply("air",   g_state.air_mode,   changed_air)   < 0) {
+    s_server.send(400, "text/plain",
+                  "air: use real | simulated | disabled");
     return;
   }
-  if (try_apply("water", g_state.simulate_water, changed_water) < 0) {
-    s_server.send(400, "text/plain", "bad value for water");
+  if (try_apply("water", g_state.water_mode, changed_water) < 0) {
+    s_server.send(400, "text/plain",
+                  "water: use real | simulated | disabled");
     return;
   }
-  if (try_apply("light", g_state.simulate_light, changed_light) < 0) {
-    s_server.send(400, "text/plain", "bad value for light");
+  if (try_apply("light", g_state.light_mode, changed_light) < 0) {
+    s_server.send(400, "text/plain",
+                  "light: use real | simulated | disabled");
     return;
   }
 
@@ -557,14 +686,60 @@ static void handle_sim() {
   if (changed_water) sim_state_save_water();
   if (changed_light) sim_state_save_light();
 
-  // Echo the resulting state.
+  emit_sim_state(200);
+}
+
+// ---------------------------------------------------------------------------
+// /units — user-selected temperature unit (C/F).
+//
+//   GET  /units                              → {"temperature_units": "..."}
+//   POST /units?temperature_units=celsius    → persist + echo
+//   POST /units?temperature_units=fahrenheit → persist + echo
+//
+// Accepts case-insensitive "celsius"/"c" and "fahrenheit"/"f". The /sensors
+// response always tells the agent which unit it's reading via the same
+// `temperature_units` field — option B from the v0.7.0 design: the device
+// converts on egress so OpenClaw doesn't have to.
+// ---------------------------------------------------------------------------
+static int parse_temp_unit(const String &v) {
+  String s = v;
+  s.toLowerCase();
+  if (s == "celsius"    || s == "c") return (int)TempUnit::CELSIUS;
+  if (s == "fahrenheit" || s == "f") return (int)TempUnit::FAHRENHEIT;
+  return -1;
+}
+
+static void emit_units_state(int code) {
   JsonDocument doc;
-  doc["air"]   = g_state.simulate_air.load();
-  doc["water"] = g_state.simulate_water.load();
-  doc["light"] = g_state.simulate_light.load();
+  doc["temperature_units"] = temp_unit_label();
   String out;
   serializeJson(doc, out);
-  s_server.send(200, "application/json", out);
+  s_server.send(code, "application/json", out);
+}
+
+static void handle_units() {
+  if (s_server.method() == HTTP_GET) {
+    emit_units_state(200);
+    return;
+  }
+  if (s_server.method() != HTTP_POST) {
+    s_server.send(405, "text/plain", "use GET or POST");
+    return;
+  }
+
+  if (!s_server.hasArg("temperature_units")) {
+    s_server.send(400, "text/plain",
+                  "missing temperature_units parameter (celsius|fahrenheit)");
+    return;
+  }
+  int v = parse_temp_unit(s_server.arg("temperature_units"));
+  if (v < 0) {
+    s_server.send(400, "text/plain",
+                  "temperature_units must be celsius|c|fahrenheit|f");
+    return;
+  }
+  temp_unit_set((TempUnit)v);
+  emit_units_state(200);
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +954,7 @@ void http_server_begin() {
   s_server.on("/status",     handle_status);
   s_server.on("/snapshot",   handle_snapshot);
   s_server.on("/sim",        handle_sim);
+  s_server.on("/units",      handle_units);
   s_server.on("/hostname",   handle_hostname);
   s_server.on("/display",    handle_display);
   s_server.on("/wifi/reset", handle_wifi_reset);

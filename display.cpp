@@ -19,16 +19,12 @@
 #include "sensors.h"
 #include "config.h"
 #include "net.h"
+#include "units.h"         // user-selected C/F preference
 #include "device_name.h"   // device_hostname() — header URL reflects renames
 
 #ifndef DISABLE_DISPLAY
 
 static M5Canvas s_canvas(&M5.Display);
-
-// Display shows Fahrenheit. The atomics, NVS state, and HTTP API all
-// stay in Celsius — the upstream agent (OpenClaw) reads /sensors and
-// expects °C per the spec's HTTP contract. Convert only at the printf.
-static inline float c_to_f(float c) { return c * 9.0f / 5.0f + 32.0f; }
 
 // ---------------------------------------------------------------------------
 // OTA-in-progress takeover screen. Painted instead of the dashboard while
@@ -76,24 +72,35 @@ static void draw_frame() {
   s_canvas.printf("%s.local", device_hostname());
   y += 32;
 
-  // Simulated sensors get a yellow tint and a "*" suffix so the operator
-  // can see at a glance what's real and what's faked.
-  bool sim_water = g_state.simulate_water.load();
-  bool sim_air   = g_state.simulate_air.load();
-  bool sim_light = g_state.simulate_light.load();
+  // Per-sensor mode controls the look at a glance:
+  //   SIMULATED → yellow + "*SIM" / "*" suffix
+  //   DISABLED  → dark grey "OFF" line (no value), so it's obvious the
+  //               user opted out rather than something failing
+  //   REAL      → normal color, value-driven thresholds
+  SensorMode water_mode = sensor_mode_from(g_state.water_mode.load());
+  SensorMode air_mode   = sensor_mode_from(g_state.air_mode.load());
+  SensorMode light_mode = sensor_mode_from(g_state.light_mode.load());
+
+  // Unit suffix is a single uppercase char so the printf widths stay aligned.
+  const char unit_suffix = (temp_unit() == TempUnit::FAHRENHEIT) ? 'F' : 'C';
 
   // Water
   s_canvas.setCursor(10, y);
   float wt = g_state.water_temp.load();
-  if (std::isnan(wt)) {
+  if (water_mode == SensorMode::OFF) {
     s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    s_canvas.printf("WATER  --.-F  --");
-  } else if (sim_water) {
+    s_canvas.printf("WATER  OFF");
+  } else if (std::isnan(wt)) {
+    s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    s_canvas.printf("WATER  --.-%c  --", unit_suffix);
+  } else if (water_mode == SensorMode::SIMULATED) {
     s_canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
-    s_canvas.printf("WATER  %4.1fF  *SIM", c_to_f(wt));
+    s_canvas.printf("WATER  %4.1f%c  *SIM",
+                    temp_in_user_unit(wt), unit_suffix);
   } else {
     s_canvas.setTextColor(wt > 26.0f ? TFT_RED : TFT_CYAN, TFT_BLACK);
-    s_canvas.printf("WATER  %4.1fF  OK", c_to_f(wt));
+    s_canvas.printf("WATER  %4.1f%c  OK",
+                    temp_in_user_unit(wt), unit_suffix);
   }
   y += 30;
 
@@ -101,21 +108,29 @@ static void draw_frame() {
   s_canvas.setCursor(10, y);
   float at = g_state.air_temp.load();
   float hu = g_state.humidity.load();
-  if (std::isnan(at) || std::isnan(hu)) {
+  if (air_mode == SensorMode::OFF) {
     s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    s_canvas.printf("AIR    --.-F  --%%");
-  } else if (sim_air) {
+    s_canvas.printf("AIR    OFF");
+  } else if (std::isnan(at) || std::isnan(hu)) {
+    s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    s_canvas.printf("AIR    --.-%c  --%%", unit_suffix);
+  } else if (air_mode == SensorMode::SIMULATED) {
     s_canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
-    s_canvas.printf("AIR    %4.1fF  %2d%% *", c_to_f(at), (int)hu);
+    s_canvas.printf("AIR    %4.1f%c  %2d%% *",
+                    temp_in_user_unit(at), unit_suffix, (int)hu);
   } else {
     s_canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    s_canvas.printf("AIR    %4.1fF  %2d%%", c_to_f(at), (int)hu);
+    s_canvas.printf("AIR    %4.1f%c  %2d%%",
+                    temp_in_user_unit(at), unit_suffix, (int)hu);
   }
   y += 30;
 
   // Light
   s_canvas.setCursor(10, y);
-  if (sim_light) {
+  if (light_mode == SensorMode::OFF) {
+    s_canvas.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    s_canvas.printf("LIGHT  OFF");
+  } else if (light_mode == SensorMode::SIMULATED) {
     s_canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
     s_canvas.printf("LIGHT  %4u lx *", (unsigned)g_state.light_lux.load());
   } else {

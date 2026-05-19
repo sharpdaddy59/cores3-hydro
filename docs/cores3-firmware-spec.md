@@ -1,5 +1,50 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v12)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v13)
 
+> **v13 changes:** Two user-facing additions and one breaking change to the
+> HTTP contract.
+> **(1) Temperature units are user-selectable** (Celsius / Fahrenheit). A
+> new `units.{cpp,h}` module owns an NVS-persisted preference (`units`
+> namespace, key `temp`, uint8: 0 = Celsius, 1 = Fahrenheit), default
+> Fahrenheit. Both the on-screen dashboard and the `/sensors` JSON emit
+> temperatures in the selected unit — option B in the design discussion:
+> the device converts on egress so the upstream agent (OpenClaw) doesn't
+> have to. The atomics in `g_state` still hold raw Celsius (that's what
+> the hardware drivers natively return); conversion happens only at the
+> printf / serialize sites via `temp_in_user_unit(c)`. The `/sensors`
+> response gains a new `temperature_units` string field
+> (`"celsius"` | `"fahrenheit"`) so any client can disambiguate. New
+> endpoint: `GET`/`POST /units?temperature_units=celsius|fahrenheit`.
+> **(2) Sensors are now tristate** — REAL, SIMULATED, or DISABLED. The
+> per-sensor `simulate_<x>` booleans in `SensorState` are replaced with
+> `<x>_mode` atomics of type `std::atomic<uint8_t>` backing the
+> `SensorMode` enum (REAL=0, SIMULATED=1, OFF=2; the C++ identifier is
+> `OFF` only to dodge ESP32's `#define DISABLED` GPIO-mode macro, the
+> wire-format label is still `"disabled"`). DISABLED is intended for "I
+> intentionally do not have this sensor — and that's fine" (e.g.
+> microgreens with no water tank). Sensor tasks short-circuit out of the
+> bus access when their mode is DISABLED, leaving the value atomic and
+> timestamp untouched; the `/sensors` handler emits `null` for the value
+> regardless. NVS migration is transparent: old bool keys in the `sim`
+> namespace (`false`=0=REAL, `true`=1=SIMULATED) decode correctly under
+> `getUChar`.
+> **(3) Breaking HTTP changes** for any client of `/sensors` and `/sim`.
+> The `simulated` boolean object in `/sensors` is **replaced** by a
+> `status` object whose values are the strings `"real"`, `"simulated"`,
+> or `"disabled"` — strictly more expressive than the old booleans
+> (disabled needs its own bucket, and `null` value + status disambiguates
+> "missing because off" from "missing because stale/errored"). `/sim`'s
+> POST grammar changes too: the values are now `real`, `sim` /
+> `simulated`, `disabled` / `off` / `none` (case-insensitive). The
+> pre-v0.7.0 boolean shorthand (`on`/`off`/`true`/`false`/`1`/`0`/`auto`)
+> is no longer accepted because `off` would have been ambiguous between
+> the old "disable simulation" and the new "turn the sensor off". `GET
+> /sim` returns mode strings instead of booleans.
+> Home-page UI: a new **Temperature units** section with a C/F dropdown,
+> and the per-sensor toggles are replaced by mode dropdowns
+> (Real / Simulated / Disabled). The display shows the selected unit's
+> suffix (`F` or `C`) and renders `OFF` in dark grey for disabled sensors.
+> `FW_VERSION` bumps to `0.7.0`.
+>
 > **v12 changes:** Add a user-toggleable "Mounted upside down" orientation
 > flip that rotates both the display and the camera 180° together. The use
 > case is mechanical: with the unit mounted normally, the Grove cable
@@ -194,25 +239,32 @@ the firmware makes, and only when the agent is unreachable.
 blocked waiting for a sensor. A stale reading is acceptable — the agent's trend
 analysis will catch extended freezes.
 
-## Simulation Mode
+## Sensor Mode
 
-Each sensor independently runs in either **real-hardware** mode (the default)
-or **simulated** mode (random values from `simulation.cpp`). The flag for
-each sensor is stored in `g_state.simulate_air / simulate_water /
-simulate_light`, persisted in NVS, and toggled at runtime via `POST /sim`
-without reflashing.
+Each sensor independently runs in one of three modes: **real** (default,
+read hardware), **simulated** (random values from `simulation.cpp`), or
+**disabled** (skip the read entirely; the value reads as `null` with
+`status: "disabled"` on `/sensors`). The mode for each sensor is stored in
+`g_state.air_mode / water_mode / light_mode` (atomic<uint8_t> backing the
+`SensorMode` enum), persisted in NVS, and toggled at runtime via
+`POST /sim` without reflashing.
 
 This replaces v3's compile-time `SIMULATION_MODE` define. One firmware image
-covers every combination of "real" and "simulated" sensors. Use cases:
+covers every combination of real / simulated / disabled sensors. Use cases:
 
-- **Develop the agent without sensors:** flip all three to sim, get
+- **Develop the agent without sensors:** flip all three to simulated, get
   realistic-looking data.
 - **Quarantine a misbehaving sensor in production:** flip just the
-  problematic one to sim until you can replace the hardware. Other sensors
-  continue reading real values; the agent sees the `simulated` flag in the
+  problematic one to simulated until you can replace the hardware. Other
+  sensors continue reading real values; the agent sees `status` in the
   `/sensors` response and knows what to trust.
-- **Fault-injection testing:** flip a sensor to sim to see how the agent
-  reacts to fake-but-plausible data; flip back to real to verify recovery.
+- **Fault-injection testing:** flip a sensor to simulated to see how the
+  agent reacts to fake-but-plausible data; flip back to real to verify
+  recovery.
+- **Intentionally absent sensor:** flip to disabled when a deployment
+  doesn't physically include the sensor (e.g. microgreens with no water
+  tank → water disabled). The agent receives `null` + `status: "disabled"`
+  and treats the signal as not-present rather than missing-due-to-error.
 
 ### Default Ranges (`simulation.cpp`)
 
@@ -523,30 +575,41 @@ meaningful regardless of NTP state. Content-Type: `application/json`.
 
 ```json
 {
-  "water_temp": 22.5,
-  "air_temp": 24.1,
+  "water_temp": 72.5,
+  "air_temp": 75.4,
   "humidity": 55,
   "light": 320,
+  "temperature_units": "fahrenheit",
   "rssi": -45,
   "ss_boot_water": 8492,
   "ss_boot_air": 8492,
   "ss_boot_light": 8480,
   "wifi_ok": true,
-  "simulated": {
-    "air":   false,
-    "water": false,
-    "light": false
+  "status": {
+    "air":   "real",
+    "water": "disabled",
+    "light": "real"
   }
 }
 ```
 
-- If a sensor hasn't reported in > 120 seconds, set its value to `null`
-- If `isnan(value)`, emit `null` (NaN cannot be JSON-encoded)
-- If WiFi is down, set `wifi_ok: false`
-- The `simulated` block reports which sensor was reading from the random
-  generator vs. real hardware at the time the response was built. Toggle
-  via `POST /sim` (see Admin endpoints below). Agents should treat
-  `simulated[<sensor>] == true` values as not-for-real-decisions data.
+- `temperature_units` is the user-selected unit (`"celsius"` or
+  `"fahrenheit"`); `water_temp` and `air_temp` are emitted in that unit.
+  Toggle via `POST /units`. The atomics in `g_state` are still raw °C —
+  conversion happens at serialize time in `temp_in_user_unit`.
+- If a sensor's mode is `"disabled"`, the corresponding value field is
+  `null` regardless of any stored reading — the user explicitly opted out.
+- If a sensor hasn't reported in > 120 seconds, its value is `null` too
+  (stale). The `status` field still reflects the mode (`"real"` or
+  `"simulated"`), which is how an agent disambiguates "stale/erroring" from
+  "intentionally off".
+- If `isnan(value)`, emit `null` (NaN cannot be JSON-encoded).
+- If WiFi is down, set `wifi_ok: false`.
+- The `status` block reports each sensor's mode: `"real"` (hardware read),
+  `"simulated"` (`sim_*()` generator), or `"disabled"` (sensor intentionally
+  off). Toggle via `POST /sim` (see Admin endpoints below). Agents should
+  treat `"simulated"` values as not-for-real-decisions data, and treat
+  `"disabled"` as "this signal does not exist in this deployment."
 
 ### `GET /status`
 Returns system health and diagnostic state. `boot_epoch` is set to the
@@ -606,11 +669,15 @@ users who want to inspect the device or toggle sim flags from a browser:
 
 - **Live data** section — clickable links to `/sensors`, `/status`,
   `/snapshot`.
-- **Sensor simulation** section — three CSS toggle switches (one per
-  sensor: air, water, light) showing the current state ("real hardware"
-  vs. "SIMULATED"). On page load the page calls `GET /sim` to populate
-  toggles; toggling a switch issues `POST /sim?<id>=on|off` and re-renders
-  from the response. A small feedback line reports success or errors.
+- **Temperature units** section — a dropdown (Fahrenheit / Celsius). On
+  load the page calls `GET /units` and selects the current value; changing
+  the dropdown issues `POST /units?temperature_units=<v>` and reflects the
+  resulting state.
+- **Sensor mode** section — three dropdowns (one per sensor: air, water,
+  light) with options `real hardware`, `SIMULATED`, `disabled`. On load
+  the page calls `GET /sim` to populate the dropdowns; changing a value
+  issues `POST /sim?<id>=real|simulated|disabled` and re-renders from the
+  response. A small feedback line reports success or errors.
 - **Device name** section — shows the current mDNS hostname with a
   clickable URL, a text input + Save button, and a Reset to default link.
   Save POSTs to `/hostname?name=<value>`; Reset POSTs `/hostname?name=`.
@@ -670,31 +737,64 @@ Caveat: other devices' mDNS caches typically hold the old name for up to
 ~120 seconds after a rename, so both names may resolve briefly.
 
 ### `GET /sim`
-Returns the current per-sensor simulation override flags as JSON.
-Content-Type: `application/json`.
+Returns the current per-sensor mode as JSON. Content-Type:
+`application/json`. Each value is one of `"real"`, `"simulated"`, or
+`"disabled"`.
 
 ```json
 {
-  "air":   false,
-  "water": false,
-  "light": false
+  "air":   "real",
+  "water": "disabled",
+  "light": "real"
 }
 ```
 
-### `POST /sim?<flag>=<value>[&<flag>=<value>...]`
-Sets one or more sim override flags. Recognized flags: `air`, `water`,
-`light`. Recognized values (case-insensitive): `on`/`true`/`1`/`sim` to
-enable simulation; `off`/`false`/`0`/`auto` to disable (real hardware).
+### `POST /sim?<sensor>=<mode>[&<sensor>=<mode>...]`
+Sets one or more sensor modes. Recognized sensors: `air`, `water`,
+`light`. Recognized modes (case-insensitive):
+
+- `real` → REAL — hardware read
+- `sim` or `simulated` → SIMULATED — value from `sim_*()` generator
+- `disabled`, `off`, or `none` → DISABLED — value reads as `null` on
+  `/sensors` and `status` is `"disabled"`
 
 Example:
 ```
-POST /sim?air=on&water=auto
+POST /sim?air=real&water=disabled&light=simulated
 ```
 
 Returns 200 with the resulting state as JSON (same shape as `GET /sim`),
 or 400 with a plain-text error if a value couldn't be parsed. Each
-successful flag change is persisted to NVS (`sim` namespace) before the
-response is sent — surviving reboots and reflashes.
+successful change is persisted to NVS (`sim` namespace, uint8 per sensor)
+before the response is sent — surviving reboots and reflashes. Old
+pre-v0.7.0 boolean keys in this namespace decode correctly under
+`getUChar` (false=REAL, true=SIMULATED), so existing installs migrate
+silently. The pre-v0.7.0 boolean shorthand (`on`/`off`/`true`/`false`/
+`1`/`0`/`auto`) is **not** accepted by this endpoint — `off` would have
+been ambiguous between the old "disable simulation" and the new
+"disable the sensor entirely."
+
+### `GET /units`
+Returns the current temperature-unit preference as JSON. Content-Type:
+`application/json`.
+
+```json
+{
+  "temperature_units": "fahrenheit"
+}
+```
+
+The same field appears in every `/sensors` response, so a client that
+already reads `/sensors` does not need a separate call here — this
+endpoint exists for symmetry with `/sim`, `/hostname`, and `/display`.
+
+### `POST /units?temperature_units=<unit>`
+Sets the temperature unit. Recognized values (case-insensitive):
+`celsius` or `c`; `fahrenheit` or `f`. Persisted to NVS (`units`
+namespace, key `temp`, uint8: 0=Celsius, 1=Fahrenheit). The change is
+reflected in `GET /sensors` and on the device dashboard immediately.
+Returns 200 with the resulting state as JSON (same shape as
+`GET /units`), or 400 on bad input.
 
 ### `GET /display`
 Returns the current display power settings as JSON. Content-Type:

@@ -14,6 +14,34 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+// Tri-state per-sensor mode. Backed by std::atomic<uint8_t> in SensorState
+// so it stays lock-free; convert with sensor_mode_from(byte) / (uint8_t) at
+// use sites. The integer values are persisted in NVS — DO NOT renumber.
+//
+// The OFF identifier is named this way (not DISABLED) only to dodge the
+// ESP32 HAL's `#define DISABLED 0x00` GPIO-mode macro; the wire-format
+// string and user-facing label are still "disabled".
+enum class SensorMode : uint8_t {
+  REAL      = 0,
+  SIMULATED = 1,
+  OFF       = 2,
+};
+
+inline SensorMode sensor_mode_from(uint8_t v) {
+  return (v <= (uint8_t)SensorMode::OFF)
+           ? (SensorMode)v
+           : SensorMode::REAL;
+}
+
+inline const char *sensor_mode_label(SensorMode m) {
+  switch (m) {
+    case SensorMode::SIMULATED: return "simulated";
+    case SensorMode::OFF:       return "disabled";
+    case SensorMode::REAL:
+    default:                    return "real";
+  }
+}
+
 struct SensorState {
   // Air (DHT20 thread)
   std::atomic<float>    air_temp{NAN};
@@ -34,13 +62,16 @@ struct SensorState {
   std::atomic<int>      battery_pct{0};
   std::atomic<bool>     wifi_connected{false};
 
-  // Per-sensor simulation overrides. When true, the sensor task uses
-  // simulated values from simulation.cpp instead of reading hardware.
+  // Per-sensor mode: REAL reads hardware, SIMULATED feeds values from
+  // simulation.cpp, DISABLED skips reads entirely and emits null on the
+  // API (intended for "I'm not using this sensor right now and that's
+  // fine" — e.g. microgreens with no water tank). Stored as uint8 so the
+  // atomic is trivially lock-free; cast through SensorMode at use sites.
   // Loaded from NVS at boot; toggled at runtime via POST /sim. Default
-  // is real-hardware reads (false).
-  std::atomic<bool>     simulate_air{false};     // DHT20 (air_temp + humidity)
-  std::atomic<bool>     simulate_water{false};   // DS18B20 (water_temp)
-  std::atomic<bool>     simulate_light{false};   // LTR-553ALS (light_lux)
+  // is REAL (0).
+  std::atomic<uint8_t>  air_mode{0};     // DHT20 (air_temp + humidity)
+  std::atomic<uint8_t>  water_mode{0};   // DS18B20 (water_temp)
+  std::atomic<uint8_t>  light_mode{0};   // LTR-553ALS (light_lux)
 
   // Set true while a POST /ota/upload is in flight: the buffer-then-burn
   // path needs every spare byte of PSRAM and zero contention on the I2C

@@ -6,9 +6,10 @@
 // The 750 ms conversion is handled with vTaskDelay() — yielding to the
 // scheduler inherently feeds the task watchdog. Do not disable the watchdog.
 //
-// Per-sensor simulation override: if g_state.simulate_water is true, the
-// task emits sim_water_temp() instead of reading hardware. Toggled at
-// runtime via POST /sim, persisted in NVS.
+// Per-sensor mode (REAL / SIMULATED / DISABLED) lives in g_state.water_mode.
+// SIMULATED emits sim_water_temp() without touching the bus. DISABLED skips
+// reads entirely — water_temp stays NAN and the API emits null +
+// status:"disabled". Toggled at runtime via POST /sim, persisted in NVS.
 
 #include <Arduino.h>
 #include <OneWire.h>
@@ -37,9 +38,19 @@ static void ds18b20_task(void *param) {
       continue;
     }
 
+    SensorMode mode = sensor_mode_from(g_state.water_mode.load());
+    if (mode == SensorMode::OFF) {
+      // User explicitly turned off the water sensor (e.g. microgreens —
+      // no tank). Skip the 800 ms conversion + the 1-Wire transaction;
+      // the /sensors handler will emit null + status:"disabled" based on
+      // water_mode alone.
+      vTaskDelay(pdMS_TO_TICKS(DS18B20_INTERVAL_MS));
+      continue;
+    }
+
     float t = NAN;
 
-    if (g_state.simulate_water.load()) {
+    if (mode == SensorMode::SIMULATED) {
       t = sim_water_temp();
     } else {
       s_ds.requestTemperatures();

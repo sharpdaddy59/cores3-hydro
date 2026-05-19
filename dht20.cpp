@@ -3,9 +3,11 @@
 // The DHT20 is internally an AHT20 with a fixed I2C address (0x38) and a
 // dead-simple protocol. Inline driver — no external library dependency.
 //
-// Per-sensor simulation override: if g_state.simulate_air is true, the task
-// emits sim_air_temp() and sim_humidity() values instead of reading hardware.
-// The override is toggled at runtime via POST /sim and persisted in NVS.
+// Per-sensor mode (REAL / SIMULATED / DISABLED) lives in g_state.air_mode.
+// SIMULATED emits sim_air_temp() / sim_humidity() instead of touching the
+// bus. DISABLED skips reads entirely — air_temp and humidity stay NAN and
+// the API emits null + status:"disabled". The mode is toggled at runtime
+// via POST /sim and persisted in NVS.
 //
 // Protocol summary (AHT20 datasheet §5.4):
 //   Trigger:  W [0xAC, 0x33, 0x00]
@@ -93,10 +95,20 @@ static void dht20_task(void *param) {
       continue;
     }
 
+    SensorMode mode = sensor_mode_from(g_state.air_mode.load());
+    if (mode == SensorMode::OFF) {
+      // Sensor explicitly turned off by the user. Skip the bus access
+      // and leave value + timestamp untouched — the /sensors handler
+      // reads air_mode and emits null + status:"disabled" regardless of
+      // what we'd have stored.
+      vTaskDelay(pdMS_TO_TICKS(DHT_INTERVAL_MS));
+      continue;
+    }
+
     float t = NAN;
     float h = NAN;
 
-    if (g_state.simulate_air.load()) {
+    if (mode == SensorMode::SIMULATED) {
       t = sim_air_temp();
       h = sim_humidity();
     } else if (present) {

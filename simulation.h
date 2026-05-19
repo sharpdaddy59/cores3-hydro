@@ -1,6 +1,6 @@
-// simulation.h — random-value generators used when a sensor's per-sensor
-// simulation override is set (g_state.simulate_air / simulate_water /
-// simulate_light). Ranges match the spec's §Simulation Mode table.
+// simulation.h — random-value generators used when a sensor's mode is
+// SensorMode::SIMULATED (g_state.air_mode / water_mode / light_mode).
+// Ranges match the spec's §Simulation Mode table.
 
 #pragma once
 

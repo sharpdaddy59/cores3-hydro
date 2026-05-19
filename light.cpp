@@ -115,8 +115,17 @@ static void light_task(void *param) {
       continue;
     }
 
+    SensorMode mode = sensor_mode_from(g_state.light_mode.load());
+    if (mode == SensorMode::OFF) {
+      // User turned off the ambient-light sensor. Skip the I²C read; the
+      // /sensors handler will emit null + status:"disabled" based on
+      // g_state.light_mode. Value + timestamp stay frozen.
+      vTaskDelay(pdMS_TO_TICKS(LIGHT_INTERVAL_MS));
+      continue;
+    }
+
     uint16_t lux = 0;
-    if (g_state.simulate_light.load()) {
+    if (mode == SensorMode::SIMULATED) {
       lux = sim_light();
     } else if (present) {
       ltr553_read_lux(lux);

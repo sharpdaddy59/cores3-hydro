@@ -128,7 +128,31 @@ sensor on Port A.
 
 ## Recent state
 
-- **v0.6.0 (current):** User-toggleable "Mounted upside down" orientation
+- **v0.7.0 (current):** User-selectable temperature units (Celsius /
+  Fahrenheit) and a third sensor mode: **disabled**. Units live in a
+  new `units.{cpp,h}` module (NVS namespace `units`, key `temp`, uint8
+  0=C / 1=F, default Fahrenheit). Both the dashboard and `/sensors`
+  emit temperatures in the selected unit — the device converts on
+  egress so OpenClaw doesn't have to. `/sensors` gains a
+  `temperature_units` field. New endpoint: `GET`/`POST /units`. Sensors
+  are now tristate: `simulate_<x>` bools are replaced with `<x>_mode`
+  atomics backing `SensorMode { REAL, SIMULATED, OFF }` (the C++
+  identifier `OFF` only exists to dodge ESP32's `#define DISABLED`
+  GPIO-mode macro — the wire-format string is still `"disabled"`).
+  DISABLED is for "I'm not using this sensor and that's fine" (e.g.
+  microgreens with no water tank); the task short-circuits its read
+  loop, and `/sensors` emits `null` + `status: "disabled"`. **Breaking
+  HTTP changes:** `/sensors` replaces the `simulated` boolean object
+  with a `status` object of `"real"`/`"simulated"`/`"disabled"`
+  strings; `/sim`'s POST grammar changes from `on/off/true/false/1/0`
+  to `real/sim/simulated/disabled/off/none` (the old `off=real`
+  shorthand would have collided with the new `off=disabled`). Existing
+  NVS `sim` keys migrate silently: `getUChar` decodes the old bool
+  values (false=0=REAL, true=1=SIMULATED). Home page gains a
+  Temperature-units section; sensor toggles become 3-way dropdowns.
+  Display shows `OFF` in dark grey for disabled sensors and the unit
+  suffix (`F`/`C`) reflects the user choice.
+- **v0.6.0:** User-toggleable "Mounted upside down" orientation
   flip on the home page. When enabled, display rotation switches from
   `1` → `3` (landscape, 180°) and the GC0308 sensor's hmirror+vflip are
   both set so `/snapshot` images match the screen. Use case: mount the

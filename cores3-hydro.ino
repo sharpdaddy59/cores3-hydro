@@ -26,6 +26,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #include "config.h"
 #include "sensors.h"
 #include "sim_state.h"
+#include "units.h"
 #include "device_name.h"
 #include "display_settings.h"
 #include "dht20.h"
@@ -117,10 +118,15 @@ void setup() {
     while (true) delay(1000);
   }
 
-  // Load per-sensor simulation overrides from NVS into g_state. Sensor
-  // tasks check these flags at runtime to decide between real-hardware
-  // reads and simulated values. Toggled at runtime via POST /sim.
+  // Load per-sensor mode (REAL / SIMULATED / DISABLED) from NVS into
+  // g_state. Sensor tasks check this at runtime to decide whether to
+  // read hardware, emit sim values, or skip entirely. Toggled via
+  // POST /sim.
   sim_state_load();
+
+  // Load the temperature unit preference (Celsius / Fahrenheit) used
+  // by both the display and the /sensors JSON. Toggled via POST /units.
+  units_load();
 
   // Compute the per-MAC default hostname and load any user override from
   // NVS. Must run before net_begin() so WiFi.setHostname() / mDNS pick up
