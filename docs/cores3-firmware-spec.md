@@ -1,5 +1,25 @@
-# CoreS3 Firmware Specification — Hydroponic Monitor (v13)
+# CoreS3 Firmware Specification — Hydroponic Monitor (v14)
 
+> **v14 changes:** Bug fix for the "Mounted upside down" feature, plus a
+> small home-page polish. The v12 implementation relied on
+> `set_hmirror(1) + set_vflip(1)` on the GC0308 to produce a 180° rotation;
+> verified empirically on production hardware that the esp32-camera driver's
+> `set_hmirror()` write is silently dropped (the sensor's `status.hmirror`
+> field updates to reflect the request but the captured pixels don't
+> change). `set_vflip()` works fine, but a V-flip alone leaves a horizontal
+> mirror after the physical R180 mount, so `/snapshot` came out mirrored
+> for users who actually mounted the unit upside-down. The fix is to do
+> the rotation **in software** in `camera_get_frame()`: when
+> `g_state.display_flipped` is set, the RGB565 buffer is reverse-walked
+> in-place (pixels at index `i` and `len/2 - 1 - i` are swapped), which is
+> exactly R180. Cost is ~15-30 ms per snapshot on the S3, acceptable for an
+> on-demand endpoint. The sensor is now left at `hmirror=0, vflip=0`;
+> `camera_set_flip()` is a documented no-op kept so the `/display` POST
+> handler doesn't need to know how the flip is implemented. Home page also
+> gains port labels in the sensor list (`DHT20 on Port A`, `DS18B20 on
+> Port B`, `LTR-553ALS (internal)`) so users know which Grove connector
+> hosts each sensor. `FW_VERSION` bumps to `0.7.1`.
+>
 > **v13 changes:** Two user-facing additions and one breaking change to the
 > HTTP contract.
 > **(1) Temperature units are user-selectable** (Celsius / Fahrenheit). A
@@ -815,8 +835,9 @@ Returns the current display power settings as JSON. Content-Type:
 - `sleep_ms` — milliseconds of touch idle before the backlight goes
   fully off and the canvas blit is skipped. `0` disables sleep.
 - `flipped` — `true` when the unit is mounted upside down. Display
-  rotates 180° (rotation `3` instead of `1`) and the camera sensor's
-  hmirror+vflip are both set so `/snapshot` images match the screen.
+  rotates 180° (rotation `3` instead of `1`) and `/snapshot` frames are
+  rotated 180° in software (in-place RGB565 reverse) before JPEG
+  encoding, so captured images match the screen orientation.
 
 ### `POST /display?<field>=<value>[&<field>=<value>...]`
 Updates one or more display settings. All four fields are optional;
@@ -828,7 +849,8 @@ only listed fields are changed. Validation:
 
 On success: each changed field is persisted to NVS (`display` namespace,
 keys `bright`, `dim_ms`, `sleep_ms`, `flip`); if `flipped` changed the
-display rotation and camera hmirror/vflip are reapplied immediately. The
+display rotation is reapplied immediately (subsequent `/snapshot` calls
+pick up the new orientation flag the next time a frame is fetched). The
 wake timestamp is reset (any POST is treated as user activity), and 200
 is returned with the same JSON shape as `GET /display`. On invalid
 input, returns 400 with a short text body. Other methods return 405.

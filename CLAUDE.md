@@ -128,7 +128,25 @@ sensor on Port A.
 
 ## Recent state
 
-- **v0.7.0 (current):** User-selectable temperature units (Celsius /
+- **v0.7.1 (current):** Fix the "Mounted upside down" feature — the v0.6.0
+  implementation relied on `set_hmirror(1) + set_vflip(1)` to produce a
+  180° rotation, but the esp32-camera GC0308 driver silently drops the
+  hmirror write on this hardware (the sensor's `status.hmirror` field
+  reflects the request, but the captured pixels don't change; `vflip`
+  works fine). So an actually-upside-down unit got a horizontally
+  mirrored `/snapshot` instead of a clean R180. Fix is to do the rotation
+  **in software** in `camera_get_frame()`: when `g_state.display_flipped`
+  is set, the RGB565 framebuffer is reverse-walked in-place (~15-30 ms
+  for VGA on the S3, fine for an on-demand endpoint). Sensor is left at
+  `hmirror=0, vflip=0`; `camera_set_flip()` becomes a documented no-op
+  kept as the entry point so `/display` doesn't need to know how the
+  flip is implemented. Diagnostic UI we added to isolate this
+  (`Camera (diagnostic)` section + `/cam_raw` endpoint +
+  `camera_set_raw` / `camera_get_raw_bits`) is removed; if you ever
+  need it again, look at the v0.7.1 commit. Home page also gains port
+  labels in the sensor list (`DHT20 on Port A`, `DS18B20 on Port B`,
+  `LTR-553ALS (internal)`).
+- **v0.7.0:** User-selectable temperature units (Celsius /
   Fahrenheit) and a third sensor mode: **disabled**. Units live in a
   new `units.{cpp,h}` module (NVS namespace `units`, key `temp`, uint8
   0=C / 1=F, default Fahrenheit). Both the dashboard and `/sensors`

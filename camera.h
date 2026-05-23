@@ -36,10 +36,11 @@ void camera_stop();
 bool camera_is_initialized();
 int  camera_last_error();        // 0 = no error or not yet attempted
 
-// Apply hmirror+vflip to the GC0308 to match the display's flip state.
-// When `flip` is true the sensor returns each frame 180° rotated so
-// /snapshot images line up with what the user sees on the screen when
-// the unit is mounted upside down. Called once during camera_start()
-// based on the loaded NVS state, and again from POST /display when the
-// user toggles orientation at runtime. No-op if the camera failed init.
+// Notify the camera module that the user toggled the "Mounted upside down"
+// setting. The actual 180° rotation is applied in software inside
+// camera_get_frame() based on g_state.display_flipped — we can't drive it
+// via the sensor because the esp32-camera GC0308 driver's set_hmirror()
+// write doesn't take effect (verified empirically), so a clean R180 via
+// sensor bits is impossible. Kept as an entry point so the /display POST
+// handler doesn't need to know how the flip is implemented.
 void camera_set_flip(bool flip);

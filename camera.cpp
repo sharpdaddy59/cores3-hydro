@@ -141,11 +141,14 @@ void camera_start() {
     sensor->set_gain_ctrl(sensor, 1);                 // auto gain on, but...
     sensor->set_gainceiling(sensor, GAINCEILING_2X);  // ...cap at 2x to limit noise
 
-    // Apply the user's mounting orientation. hmirror+vflip together = 180°,
-    // which matches the display rotation flip when display_flipped is set.
-    const bool flip = g_state.display_flipped.load();
-    sensor->set_hmirror(sensor, flip ? 1 : 0);
-    sensor->set_vflip(sensor, flip ? 1 : 0);
+    // Reset hmirror+vflip to known-zero. The "Mounted upside down"
+    // compensation is applied in software by camera_get_frame() — the
+    // GC0308 driver's set_hmirror() silently ignores the register write
+    // (verified empirically via /cam_raw: status reflects the request
+    // but the captured image doesn't change), so we can't produce a
+    // 180° rotation via sensor bits alone.
+    sensor->set_hmirror(sensor, 0);
+    sensor->set_vflip(sensor, 0);
   }
 
   // Discard the first frame (GC0308 first-integration window is unreliable).
@@ -173,6 +176,22 @@ bool camera_get_frame(CameraFrame *out, uint32_t timeout_ms) {
   if (!fb) {
     xSemaphoreGive(s_lock);
     return false;
+  }
+
+  // Software 180° rotation when the unit is mounted upside-down. We can't
+  // do it via the sensor because the GC0308 driver's set_hmirror() write
+  // is silently dropped — only set_vflip() takes effect, and a V-flip
+  // alone leaves a horizontally mirrored image after the physical R180
+  // mount. Doing it in software is an in-place pixel reverse over the
+  // whole RGB565 buffer (~15-30 ms for VGA on the S3).
+  if (g_state.display_flipped.load() && fb->format == PIXFORMAT_RGB565) {
+    uint16_t *p = (uint16_t *)fb->buf;
+    size_t n = fb->len / 2;
+    for (size_t i = 0, j = n - 1; i < j; ++i, --j) {
+      uint16_t t = p[i];
+      p[i] = p[j];
+      p[j] = t;
+    }
   }
 
   // Convert RGB565 → JPEG. quality is 0–100; 80 is a reasonable balance.
@@ -252,15 +271,11 @@ bool camera_is_initialized() { return s_init_ok; }
 int  camera_last_error()     { return s_last_err; }
 
 void camera_set_flip(bool flip) {
-  if (!s_init_ok) return;
-  sensor_t *sensor = esp_camera_sensor_get();
-  if (!sensor) return;
-  // hmirror+vflip both writes go over SCCB. Hold the capture mutex so we
-  // don't race with an in-flight /snapshot's frame2jpg.
-  if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
-    Serial.println("[camera] set_flip: timeout waiting for lock; applying anyway");
-  }
-  sensor->set_hmirror(sensor, flip ? 1 : 0);
-  sensor->set_vflip(sensor, flip ? 1 : 0);
-  if (s_lock) xSemaphoreGive(s_lock);
+  // No-op: the rotation is applied in software inside camera_get_frame()
+  // based on g_state.display_flipped, since the GC0308's hmirror write
+  // doesn't take effect and we can't produce a 180° via sensor bits.
+  // Kept as an entry point so the /display POST handler doesn't need to
+  // know how the flip is implemented.
+  (void)flip;
 }
+
